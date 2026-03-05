@@ -72,10 +72,8 @@ model = Dinov3Convertor(
     pool_method="PCg"
 )
 
-out = model(x)
+cls_token, patch_tokens = model(x)
 
-cls_token = out["x_norm_clstoken"]
-patch_tokens = out["x_norm_patchtokens"]
 ```
 ## Code Structure
 
