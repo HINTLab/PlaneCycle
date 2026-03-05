@@ -8,51 +8,16 @@ from planecycle.operators.planecycle_op import PlaneCycleOp
 from planecycle.operators.utils import adaptive_avg_pool_along_dim
 
 
-class Dinov3Convertor(nn.Module):
-    """Adapt 2D DINOv3 backbone to 3D volumes.
-    Input: x (B, 3, D, H, W)
-    Output: cls_token (B, D, C), patch_tokens (B, D, H, W, C)
-    """
-
-    def __init__(self, *, backbone: nn.Module, cycle_order: Tuple[str, ...] = ('HW', 'DW', 'DH', 'HW'),
-                 pool_method: Literal["PCg", "PCm"] = "PCg"):
-        super().__init__()
-        convertor = BlockConvertor(
-            converted_block=PlaneCycleBlock,
-            keep_original=False,
-            cycle_order=cycle_order,
-            pool_method=pool_method,
-        )
-        self.backbone = convertor(backbone)
-        self.patch_size = getattr(backbone, "patch_size", None)
-        self.embed_dim = getattr(backbone, "embed_dim", None)
-
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Args:
-            x: (B, 3, D, H, W)
-        Returns:
-            cls_token: (BD, C)   patch_tokens: (BD, HW, C)
-        """
-        B, _, D, H, W = x.shape
-        out = self.backbone(x)
-        cls_token = out["x_norm_clstoken"]
-        patch_tokens = out["x_norm_patchtokens"]
-        return cls_token, patch_tokens
-
-
-class BlockConvertor:
+class PlaneCycleConverter:
     """Convert backbone blocks by wrapping them."""
 
     def __init__(
             self,
-            converted_block: Type,
             keep_original: bool = False,
             blocks_attr: str = "blocks",
             cycle_order: Tuple[str, ...] = ('HW', 'DW', 'DH', 'HW'),
             pool_method: Literal["PCg", "PCm"] = "PCg",
     ):
-        self.converted_block = converted_block
         self.keep_original = keep_original
         self.blocks_attr = blocks_attr
         self.cycle_order = cycle_order
@@ -78,7 +43,7 @@ class BlockConvertor:
 
         # Wrap blocks
         wrapped = nn.ModuleList([
-            self.converted_block(
+            PlaneCycleBlock(
                 blk2d=blk,
                 rope_embed=rope_embed,
                 n_storage_tokens=n_storage_tokens,

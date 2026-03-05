@@ -51,7 +51,7 @@ To integrate **PlaneCycle** with **DINOv3**, configure the following parameters 
 
 ```python
 import torch
-from planecycle.converters.dinov3_converter import Dinov3Convertor
+from planecycle.converters.dinov3_converter import PlaneCycleConverter
 
 REPO_DIR = <PATH/TO/DINOV3/REPOSITORY>
 
@@ -66,13 +66,13 @@ model = torch.hub.load(
 )
 
 # Convert the 2D backbone into a 3D PlaneCycle model
-model = Dinov3Convertor(
-    backbone=model,
+converter = PlaneCycleConverter(
     cycle_order=('HW', 'DW', 'DH', 'HW'),
     pool_method="PCg"
 )
+model = converter(model)
 
-cls_token, patch_tokens = model(x)
+out = model(x)
 
 ```
 ## Code Structure
