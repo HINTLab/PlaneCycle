@@ -12,6 +12,7 @@ import torch.nn.init
 from torch import Tensor, nn
 
 from models.layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
+from models.layers.rope_position_encoding import UniversalRopePositionEmbedding
 from models.utils import named_apply
 
 logger = logging.getLogger("dinov3")
@@ -87,6 +88,7 @@ class DinoVisionTransformer(nn.Module):
         untie_cls_and_patch_norms: bool = False,
         untie_global_and_local_cls_norm: bool = False,
         device: Any | None = None,
+        block_type: str = "PlaneCycle", # "Slice2D",  "Flatten3D"
         **ignored_kwargs,
     ):
         super().__init__()
@@ -178,6 +180,23 @@ class DinoVisionTransformer(nn.Module):
             self.local_cls_norm = None
         self.head = nn.Identity()
         self.mask_token = nn.Parameter(torch.empty(1, embed_dim, device=device))
+        self.block_type = block_type
+        if block_type=='Flatten3D':
+            self.rope_embed = UniversalRopePositionEmbedding(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                sections=(8, 12, 12),
+                base=pos_embed_rope_base,
+                min_period=pos_embed_rope_min_period,
+                max_period=pos_embed_rope_max_period,
+                normalize_coords=pos_embed_rope_normalize_coords,
+                shift_coords=pos_embed_rope_shift_coords,
+                jitter_coords=pos_embed_rope_jitter_coords,
+                rescale_coords=pos_embed_rope_rescale_coords,
+                dtype=dtype_dict[pos_embed_rope_dtype],
+                device=device,
+            )
+
 
     def init_weights(self):
         self.rope_embed._init_weights()
@@ -193,7 +212,12 @@ class DinoVisionTransformer(nn.Module):
         # After flatten(0,1), batch becomes BD (= B_in * D).
         x = self.patch_embed(x)
         B, H, W, C = x.shape
-        x = x.flatten(1, 2)
+        if self.block_type == 'Flatten3D':
+            B = B_in
+            x = x.reshape(B, D, H, W, C)
+            x = x.flatten(1, 3)
+        else:
+            x = x.flatten(1, 2)
 
         if masks is not None:
             x = torch.where(masks.unsqueeze(-1), self.mask_token.to(x.dtype).unsqueeze(0), x)
@@ -219,8 +243,13 @@ class DinoVisionTransformer(nn.Module):
             ],
             dim=1,
         )
-
-        return x, (B_in, D, H, W, C)
+        if self.block_type == "PlaneCycle":
+            shape = (B_in, D, H, W, C)
+        elif self.block_type == "Flatten3D":
+            shape = (D, H, W)
+        else:
+            shape = (H, W)
+        return x, shape
 
     def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
         x = []
@@ -230,14 +259,22 @@ class DinoVisionTransformer(nn.Module):
             x.append(t2_x)
             shape.append(shape_tuple)
 
-        x, shape = x[0], shape[0]
-        for _, blk in enumerate(self.blocks):
-            # if self.rope_embed is not None:
-            #     rope_sincos = [self.rope_embed(H=H, W=W) for H, W in rope]
-            # else:
-            #     rope_sincos = [None for r in rope]
-            x = blk(x, shape)
-        all_x = [x]
+        if self.block_type == "PlaneCycle":
+            x, shape = x[0], shape[0]
+            for _, blk in enumerate(self.blocks):
+                x = blk(x, shape)
+            all_x = [x]
+        else:
+            for _, blk in enumerate(self.blocks):
+                if self.rope_embed is not None:
+                    if self.block_type == "Flatten3D":
+                        rope_sincos = [self.rope_embed(D=D, H=H, W=W) for D, H, W in shape]
+                    else:
+                        rope_sincos = [self.rope_embed(H=H, W=W) for H, W in shape]
+                else:
+                    rope_sincos = [None for r in shape]
+                x = blk(x, rope_sincos)
+            all_x = x
         output = []
         for idx, (x, masks) in enumerate(zip(all_x, masks_list)):
             if self.untie_cls_and_patch_norms or self.untie_global_and_local_cls_norm:
@@ -272,18 +309,29 @@ class DinoVisionTransformer(nn.Module):
             return self.forward_features_list(x, masks)
 
     def _get_intermediate_layers_not_chunked(self, x: Tensor, n: int = 1) -> List[Tensor]:
-        x, (H, W) = self.prepare_tokens_with_masks(x)
+        x, shape = self.prepare_tokens_with_masks(x)
         # If n is an int, take the n last blocks. If it's a list, take them
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
-        for i, blk in enumerate(self.blocks):
-            if self.rope_embed is not None:
-                rope_sincos = self.rope_embed(H=H, W=W)
-            else:
-                rope_sincos = None
-            x = blk(x, rope_sincos)
-            if i in blocks_to_take:
-                output.append(x)
+
+        if self.block_type == "PlaneCycle":
+            x, shape = x[0], shape[0]
+            for i, blk in enumerate(self.blocks):
+                x = blk(x, shape)
+                if i in blocks_to_take:
+                    output.append(x)
+        else:
+            for i, blk in enumerate(self.blocks):
+                if self.rope_embed is not None:
+                    if self.block_type == "Flatten3D":
+                        rope_sincos = [self.rope_embed(D=D, H=H, W=W) for D, H, W in shape]
+                    else:
+                        rope_sincos = [self.rope_embed(H=H, W=W) for H, W in shape]
+                else:
+                    rope_sincos = [None for r in shape]
+                x = blk(x, rope_sincos)
+                if i in blocks_to_take:
+                    output.append(x)
         assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
         return output
 

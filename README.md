@@ -29,24 +29,32 @@ PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters
 
 <br/>
 
+## Pretrained Models
+We utilize DINOv3 as the backbone for our 2D-to-3D lifting. 
+DINOv3 Weights: Please follow the official repository [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3) to download the pretrained checkpoints.
 
-## Pretrained Backbones 
+## Requirements
+Our code is built on top of the DINOv3 framework.
+1. DINOv3 Environment: Follow the [installation guide](https://github.com/facebookresearch/dinov3) to set up the basic dependencies.
+2. Additional Packages: medmnist, transformers
+   
+## PlaneCycle Converter
 
-To integrate **PlaneCycle** with **DINOv3**, configure the following parameters in the converter.
+Configure the following parameters in the converter.
 
 ### Key Parameters
 
-- **`cycle_order`** Specifies the sequence of spatial planes for feature aggregation.
-  Each block can be assigned a plane from `('HW', 'DW', 'DH')`.
+- `cycle_order` Specifies the sequence of spatial planes for feature aggregation.
+  Each block can be assigned a plane from `('HW', 'DW', 'DH').
 
   * Default (Paper): `('HW', 'DW', 'DH', 'HW')`
   * Alternatives: `('HW', 'DW', 'DH')` or any user-defined sequence.
 
-- **`pool_method`**  
+- `pool_method`  
   Specifies how global tokens are aggregated across planes.
 
-  - **`"PCg"`** (default): Uses adaptive pooling to preserve spatial token structure.
-  - **`"PCm"`**: Uses mean pooling to obtain a global volumetric representation.
+  - `"PCg"` (default): Uses adaptive pooling to preserve spatial token structure.
+  - `"PCm"`: Uses mean pooling to obtain a global volumetric representation.
 
 ### Example
 
@@ -74,21 +82,24 @@ converter = PlaneCycleConverter(
 model = converter(model)
 
 out = model(x)
-
 ```
+
 ## Code Structure
 
-- **`planecycle/`**  
+- `planecycle/`  
   Core implementation of the PlaneCycle framework.
 
-  - **`operators/`** – Implementation of the PlaneCycle operators.
-  - **`converters/`** – Converters for adapting pretrained ViT backbones.
+  - `operators/` – Implementation of the PlaneCycle operators.
+  - `converters/` – Converters for adapting pretrained ViT backbones.
 
-- **`models/`**
+- `models/`
 
-  - **`vision_transformer/`** – Modified Vision Transformer implementation used in this project.
+  - `vision_transformer/` – Modified Vision Transformer implementation used in this project.
 
-- **`experiments/`**  
+- `experiments/`  
   Scripts for running experiments and reproducing results.
 
-  - **`medmnist/`** – Training and benchmarking pipelines for six 3D MedMNIST+ datasets.
+  - `medmnist/` – Training and benchmarking pipelines for six 3D MedMNIST+ datasets.
+
+## How to run the experiments
+* six 3D classification datasets(./experiments/medmnist/train_eval.py)
