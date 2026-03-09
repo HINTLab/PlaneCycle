@@ -1,11 +1,11 @@
-from typing import Optional, Tuple, Literal
+from typing import Optional, Tuple, Type, Literal
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 
 from planecycle.operators.planecycle_op import PlaneCycleOp
-
+from planecycle.operators.utils import adaptive_avg_pool_along_dim
 
 class PlaneCycleConverter:
     """Convert backbone blocks by wrapping them."""
@@ -101,13 +101,18 @@ class PlaneCycleBlock(nn.Module):
         idx_0, idx_1 = self.PLANE_SHAPE_MAP[self.plane]
         return self.rope_embed(H=shape[idx_0], W=shape[idx_1])
 
-    def forward(self, x: Tensor, shape: Tuple) -> Tensor:
+    def forward(self, x: Tensor, shape: Tuple, dataset_name=None) -> Tensor:
         """Process tokens through spatial plane.
         Args:
-            x: (BD, g_len + H*W, C)   shape: (B, D, H, W, C)
+            x: (BD, g_len + H*W, C)
         Returns:
             (BD, g_len + H*W, C)
         """
+        if dataset_name == "chestmnist":
+            # (B_in, D, H, W, C)
+            # print(dataset_name)
+            return self.blk2d(x, self.rope_embed(H=shape[2], W=shape[3]))
+
         B, D, H, W, C = shape
 
         # Unpack tokens

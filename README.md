@@ -36,11 +36,12 @@ To integrate **PlaneCycle** with **DINOv3**, configure the following parameters 
 
 ### Key Parameters
 
-- **`cycle_order`**  
-  Defines the sequence of spatial planes used for feature aggregation.
+- **`cycle_order`** Specifies the sequence of spatial planes for feature aggregation.
+  Each block can be assigned a plane from `('HW', 'DW', 'DH')`.
 
-  - Default (used in the paper):`('HW', 'DW', 'DH', 'HW')`
-  - Alternative:`('HW', 'DW', 'DH')`
+  * Default (Paper): `('HW', 'DW', 'DH', 'HW')`
+  * Alternatives: `('HW', 'DW', 'DH')` or any user-defined sequence.
+
 - **`pool_method`**  
   Specifies how global tokens are aggregated across planes.
 

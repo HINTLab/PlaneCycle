@@ -24,12 +24,12 @@ class PlaneCycleOp(nn.Module):
         """Process 3D features and global tokens.
         Args:
             x: Features (B, D, H, W, C).
-            g: Global tokens (B, P', g, C).
+            g: Global tokens (B, D, g, C).
             f_layer: Pretrained 2D layer.
             plane_dim: Spatial axis for plane (1=D, 2=H, 3=W).
         Returns:
             x: Processed features (B, D, H, W, C).
-            g: Processed tokens (B, P, g, C).
+            g: Processed tokens (B, D, g, C).
         """
         B, D, H, W, C = x.shape
         P = x.shape[plane_dim]
@@ -51,4 +51,6 @@ class PlaneCycleOp(nn.Module):
         # Step 3: restore 3D features
         x = t[:, g_len:].reshape_as(x_plane).movedim(1, plane_dim)
         g = t[:, :g_len].reshape(B, P, g_len, C)
+        g = adaptive_avg_pool_along_dim(g, output_size=D, dim=1)
+
         return x, g
