@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --partition=gpu-h200-141g-ellis,gpu-h200-141g-short,gpu-v100-32g
+#SBATCH --partition=gpu-h200-141g-ellis,gpu-h200-141g-short
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
-#SBATCH --array=0-5  # 大范围占位，脚本内部自动检查
+#SBATCH --array=0-23   # 大范围占位，脚本内部自动检查
 #SBATCH -t 8:00:00
-#SBATCH -J hybrid_add_2d_ratio
+#SBATCH -J dinov3_LP_ttest
 #SBATCH -o logs/med_%A_%a.out
 
 mkdir -p logs
@@ -32,50 +32,46 @@ export PYTHONPATH="$ROOT_DIR"
 source activate "${ENV_NAME}"
 
 # --- 配置 ---
-#seeds=(42 123 1024 1337 2026)
-seeds=(42)
+seeds=(42
+#      123
+#      1024
+#      1337
+#      2026
+      )
+
 
 datasets=(
-  "chestmnist_nodulemnist3d"
-#  "organmnist3d"
-#  "adrenalmnist3d"
-#  "fracturemnist3d"
-#  "vesselmnist3d"
-#  "synapsemnist3d"
+  "nodulemnist3d"
+  "organmnist3d"
+  "adrenalmnist3d"
+  "fracturemnist3d"
+  "vesselmnist3d"
+  "synapsemnist3d"
 )
-
-ratio_2d_list=(2 3 4 5 8 10)
 
 arch_list=(
-  "dinov3_vits16"
-#  "dinov3_vitb16"
 #  "dinov3_vitl16"
+#  "dinov3_vitb16"
+  "dinov3_vits16"
 )
 
-# 定义两种 cycle 模式
-cycle_orders=(
-#  "HW DH DW"
-  "HW DH DW HW"
-)
-
-final_pool_methods=("mean")
-
-#configs=(
-#  "cycle:group_tokens_mean"
-#  "original:"
-#  "cycle:mean"
-#  "flatten_3D:"
-#)
+final_pool_methods=("learn_to_pool")
 
 configs=(
   "PlaneCycle:PCg"
-#  "PlaneCycle:PCm"
+  "PlaneCycle:PCm"
+  "Slice2D:"
+  "Flatten3D:"
 )
 
+cycle_orders=(
+#  "HW DW DH"
+  "HW DW DH HW"
+)
 
 resolutions=(64)
 
-name="Hybrid_2D3D_FT"
+name="reproduce"
 
 # --- 自动计算总任务数 ---
 total=$(( ${#seeds[@]} *
@@ -84,7 +80,6 @@ total=$(( ${#seeds[@]} *
           ${#final_pool_methods[@]} *
           ${#configs[@]} *
           ${#resolutions[@]} *
-          ${#ratio_2d_list[@]} *
           ${#cycle_orders[@]} ))
 
 echo "Total jobs: $total"
@@ -105,7 +100,6 @@ n_fpool=${#final_pool_methods[@]}
 n_conf=${#configs[@]}
 n_res=${#resolutions[@]}
 n_cycle=${#cycle_orders[@]}
-n_ratio_2d=${#ratio_2d_list[@]}
 
 cycle_idx=$(( i % n_cycle )); i=$(( i / n_cycle ))
 res_idx=$(( i % n_res )); i=$(( i / n_res ))
@@ -113,7 +107,6 @@ conf_idx=$(( i % n_conf )); i=$(( i / n_conf ))
 f_idx=$(( i % n_fpool )); i=$(( i / n_fpool ))
 arch_idx=$(( i % n_arch )); i=$(( i / n_arch ))
 data_idx=$(( i % n_data )); i=$(( i / n_data ))
-ratio_2d_idx=$(( i % n_ratio_2d )); i=$(( i / n_ratio_2d ))
 seed_idx=$(( i % n_seed ))
 
 # --- 取值 ---
@@ -123,26 +116,12 @@ target_res=${resolutions[$res_idx]}
 arch=${arch_list[$arch_idx]}
 final_pool=${final_pool_methods[$f_idx]}
 data_flag=${datasets[$data_idx]}
-ratio_2d=${ratio_2d_list[$ratio_2d_idx]}
 project_name="${arch}_${name}_${target_seed}"
 
 current_config=${configs[$conf_idx]}
 block_type=${current_config%:*}
 pool_method=${current_config#*:}
 
-# --- flatten_3D 特殊参数 ---
-extra_args=""
-
-case "$block_type" in
-  flatten_3D)
-    extra_args="--use_universal_rope --rope_dim=3"
-    final_pool="no_pool"
-    ;;
-esac
-
-if [[ "$block_type" == "flatten_3D" ]]; then
-  echo "[INFO] flatten_3D detected → overriding final_pool to no_pool"
-fi
 
 # --- Debug banner ---
 echo "===== RUN CONFIG ====="
@@ -154,44 +133,31 @@ echo "Pool method    : $pool_method"
 echo "Final pool     : $final_pool"
 echo "Resolution     : $target_res"
 echo "Seed           : $target_seed"
-echo "Extra args     : $extra_args"
 echo "Cycle Order    : $target_cycle"
-echo "Ratio_2d       : $ratio_2d"
 echo "======================"
 
 # --- 运行 ---
-python experiments/medmnist/train_and_eval_pytorch_multitask.py \
+python experiments/medmnist/train_eval.py \
+    --weight_dir="/scratch/work/yuy10/DINOv3/weight_dir" \
+    --entity="yuyinghong1-aalto-university" \
     --project_name="$project_name" \
     --data_flag="$data_flag" \
     --arch="$arch" \
     --block_type="$block_type" \
     --pool_method="$pool_method" \
     --final_pool_method="$final_pool" \
-    --target_resolution="$target_res" \
     --batch_size=32 \
-    --num_epochs=100 \
+    --num_epochs=200 \
     --num_workers=4 \
     --scheduler="WarmupCosineAnnealingLR" \
-    --max_lr=3e-4 \
-    --weight_decay=0.05 \
+    --max_lr=1e-3 \
+    --weight_decay=1e-5 \
     --warmup_epochs=10 \
-    --stop_patience=20 \
     --download \
     --output_root="/scratch/work/yuy10/DINOv3/output_dir" \
     --seed="$target_seed" \
-    --training_method="FT" \
-    --dataset_type=Hybrid_2D3D \
-    --ratio_2d="$ratio_2d" \
-    --ratio_3d=1 \
-    --lambda_2d=1.0 \
-    --lambda_3d=1.0 \
-    --updates_per_epoch=37 \
-    --dataset2D=chestmnist \
-    --dataset3D=nodulemnist3d \
-    --batchsize2d=256 \
-    --batchsize3d=32 \
-    $extra_args   \
-    --cycle_order $target_cycle  # 注意：这里不加引号，Bash 会将其拆分为 HW DH DW
+    --training_method="LP" \
+    --cycle_order $target_cycle
 
 echo "===== JOB END ====="
 date
