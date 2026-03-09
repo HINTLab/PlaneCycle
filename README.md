@@ -60,7 +60,7 @@ Configure the following parameters in the converter.
 
 ```python
 import torch
-from planecycle.converters.dinov3_converter import PlaneCycleConverter
+from planecycle.converters.converter import PlaneCycleConverter
 
 REPO_DIR = <PATH/TO/DINOV3/REPOSITORY>
 

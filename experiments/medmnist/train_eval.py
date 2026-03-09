@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from torchvision.transforms import v2
 from tqdm import tqdm, trange
 
-from planecycle.converters.dinov3_converter import PlaneCycleConverter
+from planecycle.converters.converter import PlaneCycleConverter
 
 MODEL_WEIGHTS_MAP = {
     "dinov3_vits16": "dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
