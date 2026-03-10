@@ -34,10 +34,15 @@ We utilize DINOv3 as the backbone for our 2D-to-3D lifting.
 DINOv3 Weights: Please follow the official repository [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3) to download the pretrained checkpoints.
 
 ## Requirements
-Our code is built on top of the DINOv3 framework.
+Our code is built on top of the DINOv3 framework. 
 1. DINOv3 Environment: Follow the [installation guide](https://github.com/facebookresearch/dinov3) to set up the basic dependencies.
 2. Additional Packages: medmnist, transformers
-   
+
+All experiments are conducted on a single NVIDIA H200 GPU (141GB memory). 
+Memory requirements on MedMNIST datasets are detailed in the paper:
+- Linear Probing: <10GB
+- Fine-Tuning: 17GB (ViT-S), 33GB (ViT-B), 87GB (ViT-L)
+
 ## PlaneCycle Converter
 
 Configure the following parameters in the converter.
