@@ -347,7 +347,7 @@ def build_parser():
     exp.add_argument('--run_name', default=None, type=str, help='Optional explicit W&B run name.')
     exp.add_argument('--output_root', default='./outputs', type=str, help='Directory for logs and evaluation outputs.')
     exp.add_argument('--gpu_ids', default='0', type=str, help='Comma-separated GPU ids, e.g. "0" or "0,1".')
-    exp.add_argument('--num_workers', default=0, type=int, help='Number of DataLoader worker processes.')
+    exp.add_argument('--num_workers', default=4, type=int, help='Number of DataLoader worker processes.')
     exp.add_argument('--seed', default=42, type=int, help='Random seed for reproducibility.')
     exp.add_argument('--download', action='store_true', help='Download MedMNIST data if not found locally.')
 
@@ -374,7 +374,7 @@ def build_parser():
     mdl = parser.add_argument_group("model")
     mdl.add_argument('--training_method', default='LP', type=str,
                      help='Training mode: LP(linear probing) or FT(finetune).')
-    mdl.add_argument('--repo_path', default='models', type=str, help='Local torch.hub repository path.')
+    mdl.add_argument('--repo_path', default='../../models', type=str, help='Local torch.hub repository path.')
     mdl.add_argument('--weight_dir', default=None, type=str, help='Path to pretrained backbone weights.')
     mdl.add_argument('--arch', default='dinov3_vits16', type=str, help='Backbone architecture name.')
     mdl.add_argument('--block_type', default='PlaneCycle', type=str, help='Backbone block type or "PlaneCycle".')

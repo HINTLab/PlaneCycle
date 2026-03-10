@@ -1,106 +1,140 @@
-# SLURM Job Submission Guide
+# MedMNIST
 
-This repository contains scripts for training DINOv3 models on MedMNIST datasets using SLURM job scheduling.
+Training script for DINOv3 models on MedMNIST datasets using Linear Probing and Fine-Tuning.
 
-## Quick Start
+# Quick Start
 
-### 1. Configure Environment Variables
+To reproduce all results, simply change `--block_type` between `PlaneCycle`, `Slice2D`, and `Flatten3D` in the commands below.
 
-Edit `submit_job.sh` and set the following variables to match your system:
+**Pool Method**: `--pool_method="PCg"` is used by default. You can also try `PCm`, but note that `PCg` performs better than `PCm` in Linear Probing, while they perform similarly in Fine-Tuning.
 
-```bash
-ENV_NAME=""                    # Conda environment name
-PROJECT_ROOT="/path/to/project"      # Project root directory
-WEIGHT_DIR="/path/to/weights"        # Directory for pretrained weights
-OUTPUT_DIR="/path/to/outputs"        # Directory for training outputs
-ENTITY="your-wandb-entity"           # Weights & Biases entity name
-TRAIN_SCRIPT="${PROJECT_ROOT}/experiments/medmnist/train_eval.py"  # Path to training script
-```
+**Final Pooling**: We use a simple learnable fusion layer (`--final_pool_method="learn_to_pool"`) to fuse features across different slices. You can also use `"mean"` for simple averaging without a learnable fusion layer.
 
-### 2. Configure Training Hyperparameters (Optional)
+**3D RoPE**: `Flatten3D` uses an improved 3D Rotary Position Embedding (RoPE) that extends DINOv3's original 2D RoPE to 3D. See `models/layers/rope_position_encoding.py` for implementation details.
 
-Modify these variables in `submit_job.sh` if needed:
+**Cycle Order**: The default plane traversal order for PlaneCycle is `--cycle_order "HW" "DW" "DH" "HW"` as reported in the paper. 
+You can customize this to any order, e.g., `('HW', 'DW', 'DH')` or `('HW', 'DH', 'DW')`, or even define different planes for each block. 
+We observe that different plane orders yield slight performance variations across different datasets.
+
+### Linear Probing (LP)
 
 ```bash
-BATCH_SIZE=32                        # Batch size for training
-NUM_EPOCHS=200                       # Number of training epochs
-NUM_WORKERS=4                        # Number of DataLoader workers
-SCHEDULER="WarmupCosineAnnealingLR" # Learning rate scheduler
-MAX_LR=1e-3                          # Maximum learning rate
-WEIGHT_DECAY=1e-5                    # Weight decay for optimizer
-WARMUP_EPOCHS=10                     # Warmup epochs
-TRAINING_METHOD="LP"                 # Training method (LP for linear probing)
-DOWNLOAD_FLAG="--download"           # Use --download to auto-download datasets
+python train_val.py \
+    --weight_dir="/path/to/weights" \
+    --entity="your-wandb-entity" \
+    --project_name="dinov3_lp_baseline" \
+    --data_flag="nodulemnist3d" \
+    --arch="dinov3_vits16" \
+    --block_type="PlaneCycle" \
+    --pool_method="PCg" \
+    --final_pool_method="learn_to_pool" \
+    --batch_size=32 \
+    --num_epochs=200 \
+    --num_workers=4 \
+    --scheduler="WarmupCosineAnnealingLR" \
+    --max_lr=1e-3 \
+    --weight_decay=1e-5 \
+    --warmup_epochs=10 \
+    --output_root="/path/to/outputs" \
+    --seed=42 \
+    --training_method="LP" \
+    --cycle_order "HW" "DW" "DH" "HW" \
+    --download
 ```
 
-### 3. Configure Search Space (Optional)
-
-Modify arrays in `submit_job.sh` to control which experiments to run:
+### Fine-Tuning (FT)
 
 ```bash
-seeds=(42 123 1024 1337 2026)
-datasets=(
-  "nodulemnist3d"
-  "organmnist3d"
-  "adrenalmnist3d"
-  ...
-)
-arch_list=("dinov3_vitl16" "dinov3_vitb16" "dinov3_vits16")
-configs=("PlaneCycle:PCg" "PlaneCycle:PCm" "Slice2D:" "Flatten3D:")
-cycle_orders=("HW DW DH HW")
+python train_val.py \
+    --weight_dir="/path/to/weights" \
+    --entity="your-wandb-entity" \
+    --project_name="dinov3_ft_baseline" \
+    --data_flag="nodulemnist3d" \
+    --arch="dinov3_vits16" \
+    --block_type="PlaneCycle" \
+    --pool_method="PCg" \
+    --final_pool_method="learn_to_pool" \
+    --batch_size=32 \
+    --num_epochs=100 \
+    --num_workers=4 \
+    --scheduler="WarmupCosineAnnealingLR" \
+    --max_lr=5e-5 \
+    --weight_decay=0.05 \
+    --warmup_epochs=10 \
+    --output_root="/path/to/outputs" \
+    --seed=42 \
+    --training_method="FT" \
+    --cycle_order "HW" "DW" "DH" "HW" \
+    --download
 ```
 
-### 4. Submit Jobs
+## Training Parameters
 
-```bash
-sbatch submit_job.sh
-```
+### Essential Parameters
 
-This will submit a job array. The number of jobs equals:
-```
-total_jobs = len(seeds) × len(datasets) × len(arch_list) × len(configs) × len(cycle_orders)
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--data_flag` | organmnist3d | Dataset: organmnist3d, nodulemnist3d, adrenalmnist3d, fracturemnist3d, vesselmnist3d, synapsemnist3d |
+| `--arch` | dinov3_vits16 | Model architecture: dinov3_vits16, dinov3_vitb16, dinov3_vitl16 |
+| `--batch_size` | 32 | Batch size for training |
+| `--num_epochs` | 200 | Number of training epochs |
+| `--seed` | 42 | Random seed |
+| `--output_root` | ./outputs | Output directory |
 
+### Learning Rate & Optimization
 
-## Directory Structure
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--max_lr` | 1e-3 | Maximum learning rate |
+| `--min_lr` | 1e-6 | Minimum learning rate |
+| `--scheduler` | WarmupCosineAnnealingLR | Scheduler: MultiStepLR, CosineAnnealingLR, WarmupCosineAnnealingLR |
+| `--warmup_epochs` | 10 | Warmup epochs (for WarmupCosineAnnealingLR) |
+| `--weight_decay` | 1e-5 | Weight decay for AdamW |
 
-Ensure your project has the following structure:
+### Architecture & Pooling
 
-```
-PROJECT_ROOT/
-├── experiments/
-│   └── medmnist/
-│       └── train_eval.py          # Training script
-├── models/                        # Contains model definitions (for torch.hub)
-└── logs/                          # SLURM logs (created automatically)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--block_type` | PlaneCycle | Block type: PlaneCycle, Slice2D, Flatten3D |
+| `--pool_method` | PCg | Pooling: PCg or PCm (for PlaneCycle) |
+| `--final_pool_method` | learn_to_pool | Final pooling: mean, learn_to_pool, or no_pool |
+| `--cycle_order` | HW DW DH HW | Plane order for PlaneCycle |
+| `--D_slices` | 64 | Depth slices for pooling |
+| `--concat_patch_token` | - | Add flag to concatenate patch tokens |
 
-WEIGHT_DIR/                        # Pretrained weights directory
-OUTPUT_DIR/                        # Training outputs and checkpoints
-```
+### Data & I/O
 
-## Configuration Tips
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--size` | 64 | Original image size |
+| `--target_resolution` | 64 | Target resolution |
+| `--as_rgb` | - | Add flag to convert to RGB |
+| `--num_workers` | 0 | DataLoader workers |
+| `--download` | - | Add flag to auto-download datasets |
+| `--weight_dir` | - | Weights directory path |
 
-### To run a single experiment:
-Set all arrays to have single elements:
-```bash
-seeds=(42)
-datasets=("organmnist3d")
-arch_list=("dinov3_vits16")
-```
+### Logging & Checkpoints
 
-### To modify SLURM resources:
-Edit the SBATCH header in `submit_job.sh`:
-```bash
-#SBATCH --partition=gpu-h200-141g-ellis,gpu-h200-141g-short
-#SBATCH --gpus=1                    # Number of GPUs
-#SBATCH --cpus-per-task=4          # CPUs per task
-#SBATCH --mem=128G                 # Memory per task
-#SBATCH -t 8:00:00                 # Time limit
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--entity` | <your_wandb_entity> | W&B entity name (required for logging) |
+| `--project_name` | dinov3 | W&B project name |
+| `--run_name` | - | Custom run name |
+| `--model_path` | - | Path to pretrained checkpoint |
+| `--training_method` | LP | LP (linear probe) or FT (finetune) |
+
+## Recommended Settings
+
+### Linear Probing vs Fine-Tuning
+
+| Setting | LP | FT |
+|---------|----|----|
+| `--training_method` | LP | FT |
+| `--num_epochs` | 200 | 100 |
+| `--max_lr` | 1e-3 | 5e-5 |
+| `--weight_decay` | 1e-5 | 0.05 |
 
 ## Notes
-- Each job runs a single experiment configuration
-- Jobs are independent and can run in parallel
-- Results are logged to Weights & Biases (W&B)
-- Training outputs are saved to `OUTPUT_DIR`
-- Logs are saved to `logs/` directory with naming pattern `job_JOBID_ARRAYID.out`
+- Results are logged to Weights & Biases
+- **Linear Probing (LP)**: Freezes the backbone, only trains the classification head
+- **Fine-Tuning (FT)**: Updates all parameters, requires lower learning rate and higher weight decay

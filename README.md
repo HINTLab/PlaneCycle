@@ -48,7 +48,7 @@ Configure the following parameters in the converter.
   Each block can be assigned a plane from `('HW', 'DW', 'DH').
 
   * Default (Paper): `('HW', 'DW', 'DH', 'HW')`
-  * Alternatives: `('HW', 'DW', 'DH')` or any user-defined sequence.
+  * Alternatives: Support any order, e.g., `('HW', 'DW', 'DH')` or `('HW', 'DH', 'DW')`, or even define different planes for each block. 
 
 - `pool_method`  
   Specifies how global tokens are aggregated across planes.
