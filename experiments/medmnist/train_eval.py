@@ -374,7 +374,7 @@ def build_parser():
     mdl = parser.add_argument_group("model")
     mdl.add_argument('--training_method', default='LP', type=str,
                      help='Training mode: LP(linear probing) or FT(finetune).')
-    mdl.add_argument('--repo_path', default='../../models', type=str, help='Local torch.hub repository path.')
+    mdl.add_argument('--repo_path', default=os.path.join(os.path.dirname(__file__), '..', '..', 'models'), type=str, help='Local torch.hub repository path.')
     mdl.add_argument('--weight_dir', default=None, type=str, help='Path to pretrained backbone weights.')
     mdl.add_argument('--arch', default='dinov3_vits16', type=str, help='Backbone architecture name.')
     mdl.add_argument('--block_type', default='PlaneCycle', type=str, help='Backbone block type or "PlaneCycle".')
