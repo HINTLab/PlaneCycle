@@ -315,7 +315,7 @@ class DinoVisionTransformer(nn.Module):
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
 
         if self.block_type == "PlaneCycle":
-            x, shape = x[0], shape[0]
+            x, shape = x, shape
             for i, blk in enumerate(self.blocks):
                 x = blk(x, shape)
                 if i in blocks_to_take:
@@ -324,11 +324,13 @@ class DinoVisionTransformer(nn.Module):
             for i, blk in enumerate(self.blocks):
                 if self.rope_embed is not None:
                     if self.block_type == "Flatten3D":
-                        rope_sincos = [self.rope_embed(D=D, H=H, W=W) for D, H, W in shape]
+                        D, H, W = shape
+                        rope_sincos = self.rope_embed(D=D, H=H, W=W)
                     else:
-                        rope_sincos = [self.rope_embed(H=H, W=W) for H, W in shape]
+                        H, W = shape
+                        rope_sincos = self.rope_embed(H=H, W=W)
                 else:
-                    rope_sincos = [None for r in shape]
+                    rope_sincos = None
                 x = blk(x, rope_sincos)
                 if i in blocks_to_take:
                     output.append(x)
@@ -360,9 +362,9 @@ class DinoVisionTransformer(nn.Module):
         extra_tokens = [out[:, 1 : self.n_storage_tokens + 1] for out in outputs]
         outputs = [out[:, self.n_storage_tokens + 1 :] for out in outputs]
         if reshape:
-            B, _, h, w = x.shape
+            B, c, d, h, w = x.shape
             outputs = [
-                out.reshape(B, h // self.patch_size, w // self.patch_size, -1).permute(0, 3, 1, 2).contiguous()
+                out.reshape(B, d, h // self.patch_size, w // self.patch_size, -1).permute(0, 4, 1, 2, 3).contiguous()
                 for out in outputs
             ]
         if not return_class_token and not return_extra_tokens:

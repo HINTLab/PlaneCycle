@@ -1,0 +1,61 @@
+seed: 42
+dataset: 'mmwhs'
+datasets:
+  train:
+    root_dir: ...   # TODO
+    data_type: "CT"
+    mode: "train"
+  val:
+    root_dir: ...   # TODO
+    data_type: "CT"
+    mode: "test"
+data_loader:
+  batch_size: 8
+  num_workers: 4
+backbone_model:
+  load_model:
+    repo_or_dir: "*/PlaneCycle/models"    # TODO: hubconf root dir
+    model: 'dinov3_vits16'
+    source: 'local'
+    pretrained: False
+    block_type: "PlaneCycle"  # Select from 'PlaneCycle', 'Slice2D' or 'Flatten3D'
+  checkpoint_path: "*/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"   # TODO
+converter:
+  cycle_order: ['HW', 'DW', 'DH', 'HW']
+  pool_method: 'PCg'
+segmentation_decoder:
+  backbone_out_layers: 'last'
+  hidden_dim: 512
+  num_classes: 6
+  dropout: 0.2
+  tuning: True
+optimizer:
+  lr: 1e-4
+  betas: [0.9, 0.999]
+  weight_decay: 1e-3
+scheduler:
+  scheduler_type: 'WarmupOneCycleLR'
+  total_iter: 30000
+  constructor_kwargs:
+    warmup_iters: 1500
+    warmup_ratio: 1e-6
+    anneal_strategy: 'cos'
+    base_momentum: 0.85
+    max_momentum: 0.95
+    div_factor: 10.0
+    final_div_factor: .inf
+    use_beta1: False
+    update_momentum: False
+    last_epoch: -1
+loss_function:
+  dice_weight: 1
+  ce_weight: 0.5
+  boundary_weight: 0
+  n_class: 6
+  include_background_dice: False
+  include_background_ce: True
+gradient_clip: 0.8
+eval_interval: 250
+metric_to_save: 'dice'
+model_dir_to_save: ...  # TODO
+wandb_name: ...         # TODO

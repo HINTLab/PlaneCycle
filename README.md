@@ -39,9 +39,14 @@ Our code is built on top of the DINOv3 framework.
 2. Additional Packages: medmnist, transformers
 
 All experiments are conducted on a single NVIDIA H200 GPU (141GB memory). 
+
 Memory requirements on MedMNIST datasets are detailed in the paper:
 - Linear Probing: <10GB
 - Fine-Tuning: 17GB (ViT-S), 33GB (ViT-B), 87GB (ViT-L)
+
+Memory requirements on LIDC & MMWHS dataset:
+- Linear Probing: 17GB (ViT-S), 18GB (ViT-B), 32GB (ViT-L)
+- Fine-Tuning: 32GB (ViT-S), 44GB (ViT-B), 87GB (ViT-L)
 
 ## PlaneCycle Converter
 
