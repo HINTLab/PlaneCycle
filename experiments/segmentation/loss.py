@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This software may be used and distributed in accordance with
+# the terms of the DINOv3 License Agreement.
+
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -22,9 +28,11 @@ class BinaryCrossEntropyLoss(nn.Module):
 
     def forward(self, pred, target):
         """
-        pred: (B, C, D, H, W)
-        target: (B, C, D, H, W)
+        pred: (B*D,1,H,W) logits
+        target: (B*D,1,H,W) float {0,1}
         """
+        # pred = pred.reshape(B, 1, D, pred.shape[-2], pred.shape[-1])
+        # target = target.reshape(B, 1, D, target.shape[-2], target.shape[-1])
 
         target = target.float()
 
@@ -46,9 +54,9 @@ class BinaryCrossEntropyLoss(nn.Module):
         if valid_mask is not None:
             loss = loss * valid_mask
             denom = valid_mask.sum(dim=(2, 3, 4)).clamp_min(1.0)
-            loss = loss.sum(dim=(2, 3, 4)) / denom  # [B, 1]
+            loss = loss.sum(dim=(2, 3, 4)) / denom  # [B,1]
         else:
-            loss = loss.mean(dim=(2, 3, 4))  # [B, 1]
+            loss = loss.mean(dim=(2, 3, 4))  # [B,1]
 
         if self.reduction == "mean":
             return self.loss_weight * loss.mean()
@@ -64,9 +72,20 @@ def foreground_dice_loss(
         smooth: float = 1.0,
 ):
     """
-    pred: (B, C, D, H, W)
-    target: (B, C, D, H, W)
+    pred:   [B*D, 1, H, W] logits
+    target: [B*D, 1, H, W] {0,1}
     """
+    # pred = torch.sigmoid(pred)
+    #
+    # pred = pred.view(B, D, -1)
+    # target = target.float().view(B, D, -1)
+    #
+    # pred_sum = pred.sum(dim=(1, 2))
+    # target_sum = target.sum(dim=(1, 2))
+    # intersection = (pred * target).sum(dim=(1, 2))
+    #
+    # dice = (2 * intersection + smooth) / (pred_sum + target_sum + smooth)
+
     pred = torch.sigmoid(pred)
 
     dims = (2, 3, 4)
@@ -92,9 +111,24 @@ def compute_boundary(mask):
 
 def boundary_dice_loss(pred, target, smooth=1e-6):
     """
-    pred: (B, C, D, H, W)
-    target: (B, C, D, H, W)
+    pred:   [B*D, 1, H, W] logits
+    target: [B*D, 1, H, W] {0,1}
     """
+    # pred = torch.sigmoid(pred)
+    # target = target.float()
+    #
+    # pred_b = compute_boundary(pred)
+    # target_b = compute_boundary(target)
+    #
+    # pred_b = pred_b.view(B, D, -1)
+    # target_b = target_b.view(B, D, -1)
+    #
+    # intersection = (pred_b * target_b).sum(dim=(1, 2))
+    # pred_sum = pred_b.sum(dim=(1, 2))
+    # target_sum = target_b.sum(dim=(1, 2))
+    #
+    # dice = (2 * intersection + smooth) / (pred_sum + target_sum + smooth)
+    # return 1 - dice.mean()
     pred = torch.sigmoid(pred)
     target = target.float()
 
@@ -160,6 +194,14 @@ class VolumeDiceLoss(nn.Module):
         )
 
     def forward(self, pred, gt):
+        # C = pred.shape[1]
+        # H, W = pred.shape[-2:]
+        #
+        # pred = pred.view(B, D, C, H, W)
+        # gt = gt.view(B, D, C, H, W)
+        #
+        # pred = pred.permute(0, 2, 1, 3, 4)  # [B, C, D, H, W]
+        # gt = gt.permute(0, 2, 1, 3, 4)
 
         return self.dice(pred, gt)
 
@@ -173,11 +215,14 @@ class VolumeCrossEntropyLoss(nn.Module):
 
     def forward(self, pred, gt):
         """
-        pred: (B, C, D, H, W)
-        target: (B, C, D, H, W)
+        pred:   [B*D, C, H, W] logits
+        target: [B*D, C, H, W] one-hot
         """
         C = pred.shape[1]
         H, W = pred.shape[-2:]
+
+        # pred = pred.view(B, D, C, H, W).permute(0, 2, 1, 3, 4)  # [B, C, D, H, W]
+        # gt = gt.view(B, D, C, H, W).permute(0, 2, 1, 3, 4)  # [B, C, D, H, W]
 
         # ======== Ignore Background ========
         if not self.include_background:

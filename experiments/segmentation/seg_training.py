@@ -11,19 +11,26 @@ from torch.utils.data import DataLoader
 
 from monai.metrics import DiceMetric, MeanIoU
 
-from .utils.utils import set_seed
 from .datasets.lidc_dataset import LIDCSegDataset
 from .datasets.mmwhs_dataset import MMWHS_Dataset
-from .models.seg_model import build_segmentation_decoder
-from .utils.schedulers import build_scheduler
-from .utils.loss import MultiSegmentationLoss
+from .decoders import build_segmentation_decoder
+from .schedulers import build_scheduler
+from .loss import MultiSegmentationLoss
 
 from planecycle.converters.converter import PlaneCycleConverter
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def worker_init_fn(worker_id, num_workers, rank, seed):
-    """
-    Worker init func for dataloader.
+    """Worker init func for dataloader.
     The seed of each worker equals to num_worker * rank + worker_id + user_seed
     cfg:
         worker_id (int): Worker id.
@@ -52,6 +59,10 @@ def train_step(
     batch_img = batch_img.to(device)
     gt = gt.to(device)
 
+    B, D = gt.shape[0], gt.shape[1]
+
+    # batch_img = batch_img.reshape(batch_img.shape[0] * batch_img.shape[1], batch_img.shape[2], batch_img.shape[3],
+    #                               batch_img.shape[4])
     batch_img = batch_img.permute(0, 2, 1, 3, 4).contiguous()
     gt = gt.permute(0, 2, 1, 3, 4).contiguous()     # [B, C, D, H, W]
 
@@ -111,6 +122,11 @@ def validate(
             batch_img = batch_img.to(device)
             gt = gt.to(device)
 
+            B, D, C, H, W = gt.shape
+
+            # batch_img = batch_img.reshape(batch_img.shape[0] * batch_img.shape[1], batch_img.shape[2],
+            #                               batch_img.shape[3],
+            #                               batch_img.shape[4])
             batch_img = batch_img.permute(0, 2, 1, 3, 4).contiguous()
             gt = gt.permute(0, 2, 1, 3, 4).contiguous()
 
@@ -133,6 +149,9 @@ def validate(
             else:
                 raise KeyError(f"{cfg.dataset} is not supported.")
 
+            # prob = prob.view(B, D, C, H, W).permute(0, 2, 1, 3, 4)  # [B, C, D, H, W]
+            # gt = gt.view(B, D, C, H, W).permute(0, 2, 1, 3, 4)  # [B, C, D, H, W]
+
             prob_volumes.append(prob.cpu())
             gt_volumes.append(gt.cpu())
 
@@ -149,11 +168,11 @@ def validate(
     })
 
     dice_metric = DiceMetric(
-        include_background=cfg.loss_function.include_background_dice,
+        include_background=False,
         reduction="mean",  # Per-volume mean
     )
     miou_metric = MeanIoU(
-        include_background=cfg.loss_function.include_background_dice,
+        include_background=False,
         reduction="mean",
     )
 

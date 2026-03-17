@@ -21,7 +21,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Current device: {device}")
 
-    from experiments.segmentation.datasets.lidc_dataset import LIDCSegDataset
+    from datasets.lidc_dataset import LIDCSegDataset
 
     input_size, patch_size = 640, 16
     crop_size, move, upsampling_size = input_size, 5, 640
