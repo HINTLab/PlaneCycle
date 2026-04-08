@@ -1,128 +1,126 @@
-from typing import Optional, Tuple, Literal
+"""
+PlaneCycle converter – unified interface for ViT and CNN backbones.
 
-import torch
+The 2D backbone is kept intact and unmodified.
+
+"""
+
+from typing import Literal, Tuple
+
 import torch.nn as nn
 from torch import Tensor
 
-from planecycle.operators.planecycle_op import PlaneCycleOp
+from planecycle.operators.planecycle_op import PLANE_TO_AXES, PlaneCycleOp
+
+# Supported backbone names and the attributes used to detect each:
+#   dinov3 – ViT with RoPE positional encoding and storage tokens
+#   convnext – ConvNeXt; iterates backbone.stages
+SUPPORTED = ('dinov3', 'convnext')
 
 
-class PlaneCycleConverter:
-    """Convert backbone blocks by wrapping them."""
+def _detect_backbone(backbone: nn.Module) -> str:
+    """Auto-detect a backbone name from its attributes."""
+    if hasattr(backbone, 'blocks') and hasattr(backbone, 'rope_embed'):
+        return 'dinov3'
+    if hasattr(backbone, 'stages'):
+        return 'convnext'
+    raise ValueError(
+        f"Cannot auto-detect backbone. Supported: {SUPPORTED}."
+    )
+
+
+class PlaneCycleConverter(nn.Module):
+    """Wraps a 2D backbone for 3D inference via PlaneCycle.
+
+    Each block cycles through orthogonal planes (HW axial / DW coronal / DH
+    sagittal) in cyclic order. The backbone name is auto-detected from
+    its attributes; see _detect_backbone.
+
+    Args:
+        backbone: Pretrained 2D backbone (weights are not modified).
+        cycle_order: Ordered plane labels cycled round-robin across blocks.
+        pool_method: Global token pooling, 'PCg' adaptive avg (recommended) or 'PCm' mean.
+    """
 
     def __init__(
             self,
-            keep_original: bool = False,
-            blocks_attr: str = "blocks",
-            cycle_order: Tuple[str, ...] = ('HW', 'DW', 'DH', 'HW'),
+            backbone,
+            cycle_order: Tuple[str, ...] = ("HW", "DW", "DH", "HW"),
             pool_method: Literal["PCg", "PCm"] = "PCg",
-    ):
-        self.keep_original = keep_original
-        self.blocks_attr = blocks_attr
-        self.cycle_order = cycle_order
-        self.pool_method = pool_method
-        self._orig_attr = f"_{blocks_attr}_original"
-
-    def __call__(self, backbone: nn.Module) -> nn.Module:
-        """Convert backbone blocks."""
-        blocks = getattr(backbone, self.blocks_attr)
-
-        if not isinstance(blocks, nn.ModuleList):
-            raise TypeError(f"Expected ModuleList, got {type(blocks).__name__}")
-        if len(blocks) == 0:
-            raise ValueError("blocks is empty")
-
-        # Cache original
-        if self.keep_original:
-            setattr(backbone, self._orig_attr, blocks)
-
-        # Get config
-        n_storage_tokens = getattr(backbone, "n_storage_tokens", 0)
-        rope_embed = getattr(backbone, "rope_embed", None)
-
-        # Wrap blocks
-        wrapped = nn.ModuleList([
-            PlaneCycleBlock(
-                blk2d=blk,
-                rope_embed=rope_embed,
-                n_storage_tokens=n_storage_tokens,
-                block_idx=i,
-                cycle_order=self.cycle_order,
-                pool_method=self.pool_method,
-            )
-            for i, blk in enumerate(blocks)
-        ])
-
-        setattr(backbone, self.blocks_attr, wrapped)
-        return backbone
-
-    def restore(self, backbone: nn.Module) -> nn.Module:
-        """Restore original blocks."""
-        if not hasattr(backbone, self._orig_attr):
-            raise RuntimeError("No cached original blocks")
-        setattr(backbone, self.blocks_attr, getattr(backbone, self._orig_attr))
-        return backbone
-
-
-class PlaneCycleBlock(nn.Module):
-    """Apply 2D block along different spatial planes.
-
-    Input/Output: (BD, g_len + H*W, C)
-    """
-    PLANE_DIM_MAP = {"HW": 1, "DW": 2, "DH": 3}
-    PLANE_SHAPE_MAP = {"HW": (2, 3), "DW": (1, 3), "DH": (1, 2)}
-
-    def __init__(self, blk2d, rope_embed, n_storage_tokens,
-                 block_idx, cycle_order=('HW', 'DW', 'DH', 'HW'),
-                 pool_method: Literal["PCg", "PCm"] = "PCg"):
+    ) -> None:
         super().__init__()
-        self.blk2d = blk2d
-        self.rope_embed = rope_embed
+
+        for p in cycle_order:
+            if p not in PLANE_TO_AXES:
+                raise ValueError(f"Unknown plane '{p}'. Choose from {list(PLANE_TO_AXES)}.")
+
+        self.backbone = backbone
+        self.backbone_name = _detect_backbone(backbone)
         self.cycle_order = cycle_order
-        self.g_len = n_storage_tokens + 1
-        self.block_idx = block_idx
-        self.planecycleop = PlaneCycleOp(pool_method=pool_method)
+        self.norm = backbone.norm
+        if self.backbone_name == 'dinov3':
+            self.backbone.blocks = nn.ModuleList([
+                PlaneCycleOp(block=blk, blk_idx=i, n_blocks=len(backbone.blocks), backbone_name='dinov3',
+                             rope_embed=self.backbone.rope_embed,
+                             cycle_order=cycle_order, pool_method=pool_method)
+                for i, blk in enumerate(self.backbone.blocks)
+            ])
+            self.g_len = backbone.n_storage_tokens + 1  # CLS + storage tokens
 
-    @property
-    def plane(self) -> str:
-        """Get current plane by block index."""
-        return self.cycle_order[self.block_idx % len(self.cycle_order)]
+        elif self.backbone_name == 'convnext':
+            n_blocks = sum(len(s) for s in backbone.stages)
+            blk_idx = 0
+            for stage in backbone.stages:
+                for i, block in enumerate(stage):
+                    stage[i] = PlaneCycleOp(
+                        block=block,
+                        blk_idx=blk_idx,
+                        n_blocks=n_blocks,
+                        backbone_name='convnext',
+                        cycle_order=cycle_order,
+                        pool_method="",
+                    )
+                    blk_idx += 1
+        else:
+            raise ValueError(f"Unsupported backbone '{self.backbone_name}'. Choose from {SUPPORTED}.")
 
-    @property
-    def plane_dim(self) -> int:
-        """Get plane dimension."""
-        return self.PLANE_DIM_MAP[self.plane]
-
-    def _get_rope(self, shape: Tuple) -> Optional[Tensor]:
-        """Get rope encoding for current plane."""
-        if self.rope_embed is None:
-            return None
-
-        idx_0, idx_1 = self.PLANE_SHAPE_MAP[self.plane]
-        return self.rope_embed(H=shape[idx_0], W=shape[idx_1])
-
-    def forward(self, x: Tensor, shape: Tuple) -> Tensor:
-        """Process tokens through spatial plane.
-        Args:
-            x: (BD, g_len + H*W, C)   shape: (B, D, H, W, C)
-        Returns:
-            (BD, g_len + H*W, C)
+    def forward(self, x: Tensor):
         """
-        B, D, H, W, C = shape
+        Args:
+            x: Input volume (B, C, D, H, W).
+        Returns:
+            xf: Spatial features (B, D, H, W, C).
+            xcls: Pooled feature vector (B, D, C).
+        """
+        B, _C, D, _H, _W = x.shape
 
-        # Unpack tokens
-        feature_maps = x[:, self.g_len:, :].reshape(B, D, H, W, C)
-        glob_tokens = x[:, :self.g_len, :].reshape(B, D, self.g_len, C)
+        if self.backbone_name == 'dinov3':
+            xf, xg = self._vit_tokenise(x, B, D)
+            for blk in self.backbone.blocks:
+                xf, xg = blk(xf, xg)
+            xf = self.norm(xf)  # (B, D, H, W, C)
+            xcls = self.norm(xg[:, :, 0])  # (B, D, C)
+            return xf, xcls
 
-        # Apply processing
-        x, g = self.planecycleop(
-            feature_maps, glob_tokens,
-            lambda t: self.blk2d(t, self._get_rope(shape)),
-            plane_dim=self.plane_dim
-        )
+        elif self.backbone_name == 'convnext':
+            x = x.permute(0, 2, 3, 4, 1)  # (B, C, D, H, W) → (B, D, H, W, C)
+            for i in range(4):
+                x = x.permute(0, 1, 4, 2, 3).flatten(0, 1)  # → (B*D, C, H, W)
+                x = self.backbone.downsample_layers[i](x)  # → (B*D, C, H, W)
+                x = x.permute(0, 2, 3, 1).unflatten(0, (B, D))  # → (B, D, H, W, C)
+                x = self.backbone.stages[i](x)
 
-        # Pack output
-        g = g.flatten(0, 1)
-        x = x.flatten(0, 1).flatten(1, 2)
+            xf = self.norm(x)  # (B, D, H, W, C)
+            xcls = self.norm(x.mean(dim=[2, 3]))  # spatial mean → (B, D, C)
+            return xf, xcls
+        else:
+            raise ValueError(f"Unsupported backbone '{self.backbone_name}'. Choose from {SUPPORTED}.")
 
-        return torch.cat([g, x], dim=1)
+    def _vit_tokenise(self, x: Tensor, B: int, D: int) -> Tuple[Tensor, Tensor]:
+        """Slice-wise patch embedding, split into spatial xf and global xg."""
+        x = x.flatten(0, 1)  # (B*D, C, H, W)
+        x, (H, W) = self.backbone.prepare_tokens_with_masks(x)  # (B*D, g_len+H*W, C)
+        C = x.shape[-1]
+        xf = x[:, self.g_len:].reshape(B, D, H, W, C)  # (B, D, H, W, C)
+        xg = x[:, :self.g_len].reshape(B, D, self.g_len, C)  # (B, D, g_len, C)
+        return xf, xg

@@ -9,6 +9,7 @@ import medmnist
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.data as data
 import wandb
 from PIL import Image
@@ -20,13 +21,21 @@ from tqdm import tqdm, trange
 from planecycle.converters.converter import PlaneCycleConverter
 
 MODEL_WEIGHTS_MAP = {
+    # ViT Series
     "dinov3_vits16": "dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
     "dinov3_vits16plus": "dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
     "dinov3_vitb16": "dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
     "dinov3_vitl16": "dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
     "dinov3_vith16plus": "dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth",
-    "dinov3_vit7b16": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth"
+    "dinov3_vit7b16": "dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth",
+
+    # ConvNeXT Series
+    "dinov3_convnext_tiny": "dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth",
+    "dinov3_convnext_small": "dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth",
+    "dinov3_convnext_base": "dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth",
+    "dinov3_convnext_large": "dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
 }
+
 
 def set_rng_seed(seed: int) -> None:
     random.seed(seed)
@@ -86,44 +95,60 @@ class Transform3D(nn.Module):
         return (x - self.mean) / self.std
 
 
-class Dinov3Linear(nn.Module):
-    def __init__(self, *, backbone: nn.Module, embed_dim: int, D_slices: int, out_features: int,
-                 final_pool_method: str = 'learn_to_pool', concat_patch_token: bool = False,
-                 block_type="PlaneCycle"):
+def upsample_hw(x, scale_factor=2, mode="trilinear"):
+    """
+    Upsample only H and W dimensions, keep D unchanged.
+
+    Args:
+        x: (B, C, D, H, W)
+        scale_factor: int or float
+        mode: "trilinear" or "nearest"
+
+    Returns:
+        x: (B, C, D, H*scale, W*scale)
+    """
+    x = F.interpolate(
+        x,
+        scale_factor=(1, scale_factor, scale_factor),  # 关键：D不变
+        mode=mode,
+        align_corners=False if mode in ["trilinear", "bilinear"] else None,
+    )
+    return x
+
+
+class LinearHead(nn.Module):
+    def __init__(self, *, backbone, n_classes, embed_dim, final_pool_method: str = 'learn_to_pool', D_slices=64,
+                 upsample_scale=False):
         super().__init__()
         self.backbone = backbone
         self.final_pool_method = final_pool_method
-        self.concat_patch_token = concat_patch_token
-
-        if self.final_pool_method not in {'mean', 'learn_to_pool', 'no_pool'}:
-            raise ValueError(f"Unsupported final_pool_method: {self.final_pool_method!r}")
-
-        head_dim = embed_dim * 2 if self.concat_patch_token else embed_dim
         if self.final_pool_method == "learn_to_pool":
             self.pool_head = nn.Linear(D_slices, 1)
-        self.linear_head = nn.Linear(head_dim, out_features)
-        self.block_type = block_type
+        self.linear_head = nn.Linear(embed_dim, n_classes)
+        self.upsample_scale = upsample_scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, _, depth, _, _ = x.shape
-        features = self.backbone(x)
-        cls_token = features["x_norm_clstoken"]
-        if self.concat_patch_token:
-            patch_tokens = features["x_norm_patchtokens"]
-            cls_token = torch.cat([cls_token, patch_tokens.mean(dim=1)], dim=1)
-        if self.final_pool_method == 'no_pool' or self.block_type == 'Flatten3D':
-            pooled = cls_token
+        """
+        Args: x: (B, C, D, H, W)
+        Returns:
+            xf: spatial features (B, D, H, W, C)
+            xcls: CLS token per slice (B, D, C)
+        """
+        if self.upsample_scale > 1:
+            x = upsample_hw(x, scale_factor=self.upsample_scale)  # → (B, C, D, 2H, 2W)
+        xf, xcls = self.backbone(x)
+        if self.final_pool_method == "learn_to_pool":
+            xcls = self.pool_head(xcls.permute(0, 2, 1)).squeeze(-1)
+        elif self.final_pool_method == "mean":
+            xcls = xcls.mean(dim=1)  # (B, D, C) -> (B, C)
         else:
-            cls_signal = cls_token.reshape(-1, depth, cls_token.shape[1])
-            if self.final_pool_method == 'mean':
-                pooled = cls_signal.mean(dim=1)
-            else:  # learn_to_pool
-                pooled = self.pool_head(cls_signal.permute(0, 2, 1)).squeeze(-1)
-        return self.linear_head(pooled)
+            raise ValueError(f"Unknown final_pool_method: {self.final_pool_method}")
+        return self.linear_head(xcls)
 
 
-def load_model(args, device, out_features):
-    backbone = torch.hub.load(args.repo_path, args.arch, source='local', pretrained=False, block_type=args.block_type)
+def load_model(args, device, n_classes):
+    backbone = torch.hub.load(args.repo_path, args.arch, source='local', pretrained=False, block_type=args.block_type,
+                              disable_converter=args.disable_converter)
 
     weights_path = os.path.join(args.weight_dir, MODEL_WEIGHTS_MAP[args.arch])
     print(f"[*] Loading weights: {weights_path}")
@@ -134,16 +159,20 @@ def load_model(args, device, out_features):
         if unwanted_key in pretrained_weights:
             print(f"Removing {unwanted_key} from state_dict to avoid dimension mismatch.")
             del pretrained_weights[unwanted_key]
+    if args.block_type != "Conv3D":
+        backbone.load_state_dict(pretrained_weights, strict=True)
 
-    backbone.load_state_dict(pretrained_weights, strict=True)
-
+    embed_dim = backbone.embed_dim
     if args.block_type == "PlaneCycle":
-        backbone = PlaneCycleConverter(cycle_order=args.cycle_order, pool_method=args.pool_method)(backbone)
+        if args.disable_converter:
+            backbone.convert_to_PlaneCycle(cycle_order=args.cycle_order, pool_method=args.pool_method)
+        else:
+            backbone = PlaneCycleConverter(backbone=backbone, cycle_order=args.cycle_order,
+                                           pool_method=args.pool_method)
 
-    model = Dinov3Linear(backbone=backbone, embed_dim=backbone.embed_dim, D_slices=args.D_slices,
-                         out_features=out_features, final_pool_method=args.final_pool_method,
-                         concat_patch_token=args.concat_patch_token,
-                         block_type=args.block_type)
+    model = LinearHead(backbone=backbone, n_classes=n_classes, embed_dim=embed_dim,
+                       final_pool_method=args.final_pool_method,
+                       D_slices=args.D_slices, upsample_scale=args.upsample_scale)
     print(model)
 
     if args.training_method == 'LP':
@@ -154,6 +183,7 @@ def load_model(args, device, out_features):
         if param.requires_grad:
             print(f"[*requires_grad*] {name}: {param.shape}")
 
+    model.to(device)
     return model
 
 
@@ -357,6 +387,7 @@ def build_parser():
     dset.add_argument('--size', default=64, type=int, help='Original dataset image size.')
     dset.add_argument('--target_resolution', default=64, type=int,
                       help='Target spatial resolution after preprocessing.')
+    dset.add_argument('--upsample_scale', default=1, type=int, help='Upsample image before feeding to backbone.')
     dset.add_argument('--batch_size', default=32, type=int, help='Mini-batch size for training and evaluation.')
     dset.add_argument('--as_rgb', action='store_true', help='Repeat single-channel volume to 3 channels.')
 
@@ -374,17 +405,19 @@ def build_parser():
     mdl = parser.add_argument_group("model")
     mdl.add_argument('--training_method', default='LP', type=str,
                      help='Training mode: LP(linear probing) or FT(finetune).')
-    mdl.add_argument('--repo_path', default=os.path.join(os.path.dirname(__file__), '..', '..', 'models'), type=str, help='Local torch.hub repository path.')
+    mdl.add_argument('--repo_path', default=os.path.join(os.path.dirname(__file__), '..', '..', 'models'), type=str,
+                     help='Local torch.hub repository path.')
     mdl.add_argument('--weight_dir', default=None, type=str, help='Path to pretrained backbone weights.')
     mdl.add_argument('--arch', default='dinov3_vits16', type=str, help='Backbone architecture name.')
     mdl.add_argument('--block_type', default='PlaneCycle', type=str, help='Backbone block type or "PlaneCycle".')
-    mdl.add_argument('--pool_method', default='PCg', type=str, help='PlaneCycle pooling method, PCg or PCm.')
+    mdl.add_argument('--pool_method', default='', type=str, help='PlaneCycle pooling method, PCg or PCm.')
     mdl.add_argument('--final_pool_method', default='learn_to_pool', type=str,
-                     help='Final pooling method: mean, learn_to_pool, or no_pool.')
+                     help='Final pooling method: mean, learn_to_pool')
     mdl.add_argument('--D_slices', default=64, type=int, help='Number of depth slices for final pooling head.')
     mdl.add_argument('--concat_patch_token', action='store_true', help='Concatenate mean patch token to CLS token.')
-    mdl.add_argument('--cycle_order', nargs='+', choices=['HW', 'DW', 'DH'], default=['HW', 'DW', 'DH', 'HW'],
+    mdl.add_argument('--cycle_order', nargs='+', choices=['HW', 'DW', 'DH'], default=[],
                      help='Plane traversal order for PlaneCycle blocks.')
+    mdl.add_argument('--disable_converter', action='store_true', help='Concatenate mean patch token to CLS token.')
 
     # Evaluation arguments
     eva = parser.add_argument_group("evaluation")

@@ -171,7 +171,18 @@ def _make_dinov3_convnext(
     hash: Optional[str] = None,
     **kwargs,
 ):
-    from ..convnext import ConvNeXt
+    block_type = kwargs.get("block_type", "PlaneCycle")
+    disable_converter = kwargs.get("disable_converter", False)
+    if block_type == "Slice2D":
+        from models.modified_model.convnext.convnext_slice2D import ConvNeXt
+    elif block_type == "Conv3D":
+        from models.modified_model.convnext.convnext_Conv3D import ConvNeXt
+    elif block_type == "ACSConv":
+        from models.modified_model.convnext.convnext_acs import ConvNeXt
+    elif block_type == "PlaneCycle" and disable_converter:
+        from models.modified_model.convnext.convnext_PlaneCycle import ConvNeXt
+    else:
+        from ..convnext import ConvNeXt
 
     model_kwargs = dict(
         in_chans=in_chans,
