@@ -148,7 +148,7 @@ class LinearHead(nn.Module):
 
 def load_model(args, device, n_classes):
     backbone = torch.hub.load(args.repo_path, args.arch, source='local', pretrained=False, block_type=args.block_type,
-                              disable_converter=args.disable_converter)
+                              disable_converter=args.disable_converter, pool_D=args.pool_D)
 
     weights_path = os.path.join(args.weight_dir, MODEL_WEIGHTS_MAP[args.arch])
     print(f"[*] Loading weights: {weights_path}")
@@ -168,7 +168,7 @@ def load_model(args, device, n_classes):
             backbone.convert_to_PlaneCycle(cycle_order=args.cycle_order, pool_method=args.pool_method)
         else:
             backbone = PlaneCycleConverter(backbone=backbone, cycle_order=args.cycle_order,
-                                           pool_method=args.pool_method)
+                                           pool_method=args.pool_method, pool_D=args.pool_D)
 
     model = LinearHead(backbone=backbone, n_classes=n_classes, embed_dim=embed_dim,
                        final_pool_method=args.final_pool_method,
@@ -203,6 +203,7 @@ def init_wandb_run(args):
     return wandb.init(
         entity=args.entity, project=args.project_name,
         name=args.run_name or f"{args.data_flag}_{args.arch}_{args.block_type}_{args.pool_method}",
+        # config=vars(args)
         config={
             "dataset": args.data_flag,
             "architecture": args.arch, "block_type": args.block_type, "pool_method": args.pool_method,
@@ -211,8 +212,11 @@ def init_wandb_run(args):
             "epochs": args.num_epochs, "batch_size": args.batch_size, "learning_rate": args.max_lr,
             "min_lr": args.min_lr, "weight_decay": args.weight_decay, "scheduler": args.scheduler,
             "warmup_epochs": args.warmup_epochs, "target_resolution": args.target_resolution,
-            "size": args.size, "num_workers": args.num_workers, "seed": args.seed,
+            "size": args.size, "num_workers": args.num_workers, "seed": args.seed,"upsample_scale": args.upsample_scale,
+            "disable_converter": args.disable_converter, "D_slices": args.D_slices, "as_rgb": args.as_rgb,
+            "pool_D": args.pool_D,
         },
+
     )
 
 
@@ -418,6 +422,7 @@ def build_parser():
     mdl.add_argument('--cycle_order', nargs='+', choices=['HW', 'DW', 'DH'], default=[],
                      help='Plane traversal order for PlaneCycle blocks.')
     mdl.add_argument('--disable_converter', action='store_true', help='Concatenate mean patch token to CLS token.')
+    mdl.add_argument('--pool_D', action='store_true', help='Concatenate mean patch token to CLS token.')
 
     # Evaluation arguments
     eva = parser.add_argument_group("evaluation")

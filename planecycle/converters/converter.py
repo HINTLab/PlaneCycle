@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from planecycle.operators.planecycle_op import PLANE_TO_AXES, PlaneCycleOp
+from planecycle.operators.utils import adaptive_avg_pool_along_dim
 
 # Supported backbone names and the attributes used to detect each:
 #   dinov3 – ViT with RoPE positional encoding and storage tokens
@@ -47,6 +48,8 @@ class PlaneCycleConverter(nn.Module):
             backbone,
             cycle_order: Tuple[str, ...] = ("HW", "DW", "DH", "HW"),
             pool_method: Literal["PCg", "PCm"] = "PCg",
+            pool_D: bool = False,
+            last_stage_disable_PC: bool = False,
     ) -> None:
         super().__init__()
 
@@ -58,6 +61,7 @@ class PlaneCycleConverter(nn.Module):
         self.backbone_name = _detect_backbone(backbone)
         self.cycle_order = cycle_order
         self.norm = backbone.norm
+        self.pool_D = pool_D
         if self.backbone_name == 'dinov3':
             self.backbone.blocks = nn.ModuleList([
                 PlaneCycleOp(block=blk, blk_idx=i, n_blocks=len(backbone.blocks), backbone_name='dinov3',
@@ -108,8 +112,13 @@ class PlaneCycleConverter(nn.Module):
                 x = x.permute(0, 1, 4, 2, 3).flatten(0, 1)  # → (B*D, C, H, W)
                 x = self.backbone.downsample_layers[i](x)  # → (B*D, C, H, W)
                 x = x.permute(0, 2, 3, 1).unflatten(0, (B, D))  # → (B, D, H, W, C)
+                if self.pool_D:
+                    if i == 0:
+                        D = D // 4
+                    else:
+                        D = D // 2
+                    x = adaptive_avg_pool_along_dim(x, D, dim= 1)
                 x = self.backbone.stages[i](x)
-
             xf = self.norm(x)  # (B, D, H, W, C)
             xcls = self.norm(x.mean(dim=[2, 3]))  # spatial mean → (B, D, C)
             return xf, xcls

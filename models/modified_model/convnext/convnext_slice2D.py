@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import torch.nn.init
 from torch import Tensor, nn
 
+from planecycle.operators.utils import adaptive_avg_pool_along_dim
 
 logger = logging.getLogger("dinov3")
 
@@ -145,6 +146,7 @@ class ConvNeXt(nn.Module):
         layer_scale_init_value: float = 1e-6,
         # DINO arguments
         patch_size: int | None = None,
+        pool_D: bool = False,
         **ignored_kwargs,
     ):
         super().__init__()
@@ -195,6 +197,7 @@ class ConvNeXt(nn.Module):
 
         self.patch_size = patch_size
         self.input_pad_size = 4  # first convolution with kernel_size = 4, stride = 4
+        self.pool_D = pool_D
 
     def init_weights(self):
         self.apply(self._init_weights)
@@ -220,6 +223,16 @@ class ConvNeXt(nn.Module):
         h, w = x.shape[-2:]
         for i in range(4):
             x = self.downsample_layers[i](x)
+            # pool_D: downsample at D
+            if self.pool_D:
+                x = x.unflatten(0, (B, D))  # (B, D, H, W, C)
+                if i == 0:
+                    D = D // 4
+                else:
+                    D = D // 2
+                x = adaptive_avg_pool_along_dim(x, D, dim=1)
+                x = x.flatten(0, 1)
+
             x = self.stages[i](x)
         # x (N, C, H, W)
         x = x.unflatten(0, (B, -1)).permute(0, 1, 3, 4, 2) # (B, D, H, W, C)
