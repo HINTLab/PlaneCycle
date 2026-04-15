@@ -48,7 +48,7 @@ class PlaneCycleOp(nn.Module):
             pool_method="",
     ) -> None:
         super().__init__()
-        if backbone_name == 'dinov3' and pool_method not in ("PCg", "PCm"):
+        if backbone_name == 'vit' and pool_method not in ("PCg", "PCm"):
             raise ValueError(f"pool_method must be 'PCg' or 'PCm', got {pool_method!r}")
         self.block = block
         self.blk_idx = blk_idx
@@ -60,14 +60,14 @@ class PlaneCycleOp(nn.Module):
         self.plane_dim, self.rope_row, self.rope_col = PLANE_TO_AXES[plane]
 
     def forward(self, xf: Tensor, xg: Optional[Tensor] = None):
-        if self.backbone_name == 'dinov3':
-            return self._forward_dinov3(xf, xg)
+        if self.backbone_name == 'vit':
+            return self._forward_vit(xf, xg)
         elif self.backbone_name == 'convnext':
             return self._forward_convnext(xf)
         else:
             raise ValueError(f"Unknown backbone_name '{self.backbone_name}'.")
 
-    def _forward_dinov3(self, xf: Tensor, xg: Tensor):
+    def _forward_vit(self, xf: Tensor, xg: Tensor):
         """ViT path: operates on sequence tokens alongside global (CLS) tokens.
 
         Args:
