@@ -16,13 +16,13 @@ from planecycle.operators.utils import adaptive_avg_pool_along_dim
 # Supported backbone names and the attributes used to detect each:
 #   dinov3 – ViT with RoPE positional encoding and storage tokens
 #   convnext – ConvNeXt; iterates backbone.stages
-SUPPORTED = ('dinov3', 'convnext')
+SUPPORTED = ('vit', 'convnext')
 
 
 def _detect_backbone(backbone: nn.Module) -> str:
     """Auto-detect a backbone name from its attributes."""
     if hasattr(backbone, 'blocks') and hasattr(backbone, 'rope_embed'):
-        return 'dinov3'
+        return 'vit'
     if hasattr(backbone, 'stages'):
         return 'convnext'
     raise ValueError(
@@ -62,7 +62,7 @@ class PlaneCycleConverter(nn.Module):
         self.cycle_order = cycle_order
         self.norm = backbone.norm
         self.pool_D = pool_D
-        if self.backbone_name == 'dinov3':
+        if self.backbone_name == 'vit':
             self.backbone.blocks = nn.ModuleList([
                 PlaneCycleOp(block=blk, blk_idx=i, n_blocks=len(backbone.blocks), backbone_name='dinov3',
                              rope_embed=self.backbone.rope_embed,
@@ -98,7 +98,7 @@ class PlaneCycleConverter(nn.Module):
         """
         B, _C, D, _H, _W = x.shape
 
-        if self.backbone_name == 'dinov3':
+        if self.backbone_name == 'vit':
             xf, xg = self._vit_tokenise(x, B, D)
             for blk in self.backbone.blocks:
                 xf, xg = blk(xf, xg)
