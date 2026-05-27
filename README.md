@@ -77,10 +77,11 @@ from planecycle.converters.converter import PlaneCycleConverter
 x = torch.randn(2, 3, 64, 256, 256) # （N, 3, D, H, W）
 
 # Load a DINOv3 ViT backbone pretrained on web images
-backbone = torch.hub.load('facebookresearch/dinov3', 'dinov3_vitb16')
+model = torch.hub.load(REPO_DIR, "dinov3_vits16", source="local", weights=<CHECKPOINT/URL/OR/PATH>)
 
 # Convert the 2D backbone into a 3D PlaneCycle model
-model = PlaneCycleConverter(model)
+converter = PlaneCycleConverter(cycle_order=('HW', 'DW', 'DH', 'HW'), pool_method="PCg")
+model = converter(model)
 
 out = model(x)
 ```
