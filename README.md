@@ -2,6 +2,8 @@
 
 PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters ([arXiv](https://arxiv.org/abs/2603.04165))
 
+Coming soon: A unified operator for ViTs and CNNs (tests already passed, full release on the way)!
+
 ## Overview
 
 <div align="center">
