@@ -2,7 +2,7 @@
 
 PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters ([arXiv](https://arxiv.org/abs/2603.04165))
 
-Coming soon: A unified operator for ViTs and CNNs (tests already passed, full release on the way)!
+> 🚀 **Coming soon:** A unified operator for ViTs and CNNs *(tests already passed, full release on the way!)*
 
 ## Overview
 
@@ -74,24 +74,13 @@ Configure the following parameters in the converter.
 import torch
 from planecycle.converters.converter import PlaneCycleConverter
 
-REPO_DIR = <PATH/TO/DINOV3/REPOSITORY>
-
 x = torch.randn(2, 3, 64, 256, 256) # （N, 3, D, H, W）
 
 # Load a DINOv3 ViT backbone pretrained on web images
-model = torch.hub.load(
-    REPO_DIR,
-    "dinov3_vits16",
-    source="local",
-    weights=<CHECKPOINT/URL/OR/PATH>
-)
+backbone = torch.hub.load('facebookresearch/dinov3', 'dinov3_vitb16')
 
 # Convert the 2D backbone into a 3D PlaneCycle model
-converter = PlaneCycleConverter(
-    cycle_order=('HW', 'DW', 'DH', 'HW'),
-    pool_method="PCg"
-)
-model = converter(model)
+model = PlaneCycleConverter(model)
 
 out = model(x)
 ```
