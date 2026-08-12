@@ -1,0 +1,43 @@
+#!/bin/bash
+# Template for the Slurm array job.
+#
+#   cp run.sh.example run.sh     # then edit run.sh with your values
+#
+# run.sh is git-ignored (cluster paths and partition names stay private); this
+# .example is committed so others know what to fill in.
+#
+#SBATCH --partition=your-gpu-partition
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=128G
+#SBATCH -t 24:00:00
+#SBATCH -o logs/med_%A_%a.out
+#
+# Submit it yourself (from the scripts/ dir so logs/ lands here):
+#   cd experiments/medmnist/scripts && mkdir -p logs
+#   sbatch --array=$(python launch.py --config planecycle/lp --array) run.sh planecycle/lp
+# Add setting overrides after the config, e.g.  run.sh planecycle/lp --seed 42
+#
+# Or use ./submit.sh, which sizes the array and passes --partition from
+# configs/env.sh (that overrides the #SBATCH line above).
+set -euo pipefail
+
+# ===== edit these for your machine (and the partition in the #SBATCH line) =====
+ROOT_DIR=/path/to/PlaneCycle   # repository root
+CONDA_ENV=planecycle           # conda env to activate on the compute node
+# ==============================================================================
+SCRIPTS="$ROOT_DIR/experiments/medmnist/scripts"
+
+mode="${1:?usage: sbatch --array=0-<N-1> run.sh <dir/lp|dir/ft> [overrides]}"
+shift   # remaining args (--arch/--block-type/--cycle-order/...) go to launch.py
+
+echo "===== JOB START ====="; date; hostname
+
+module --force purge
+module load mamba
+source activate "$CONDA_ENV"
+export PYTHONPATH="$ROOT_DIR"
+
+python "$SCRIPTS/launch.py" --config "$mode" "$@" --task-id "$SLURM_ARRAY_TASK_ID"
+
+echo "===== JOB END ====="; date

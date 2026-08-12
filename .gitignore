@@ -2,10 +2,11 @@
 __pycache__/
 *.py[codz]
 *$py.class
-
+.DS_Store
+.gitattributes
+.idea
 # C extensions
 *.so
-
 # Distribution / packaging
 .Python
 build/
@@ -205,3 +206,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# MedMNIST sweep launcher — per-machine config (copy from *.example, never commit)
+experiments/medmnist/scripts/configs/paths.yaml
+experiments/medmnist/scripts/configs/env.sh
+experiments/medmnist/scripts/run.sh
+# ... and its generated output
+experiments/medmnist/scripts/logs/
+experiments/medmnist/scripts/wandb/
+wandb_results/

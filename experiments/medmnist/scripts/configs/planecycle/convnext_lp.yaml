@@ -1,0 +1,44 @@
+# PlaneCycle on DINOv3 ConvNeXt-base — Linear Probing.
+# ConvNeXt experiment (compare vs Slice2D / ACS on convnext_base, 5-seed avg).
+# No global tokens -> no pool_method. Two cycle_orders are compared: the
+# paper's 4-cycle (HW DW DH HW) and a 3-cycle (HW DW DH) — hypothesised to fit
+# ConvNeXt better since its stages have 3/3/9/3 (or 3/3/27/3) blocks, all
+# multiples of 3, so a 3-cycle divides each stage evenly.
+# upsample_scale=1 first (no-upsampling baseline; ConvNeXt often wants 2).
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+archs:
+#  - dinov3_convnext_tiny
+#  - dinov3_convnext_small
+  - dinov3_convnext_base
+#  - dinov3_convnext_large
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+block_types:
+  - PlaneCycle
+cycle_orders:
+  - HW DW DH HW
+  - HW DW DH
+final_pool_methods:
+  - learn_to_pool
+resolutions:
+  - 64
+train_args:
+  training_method: LP
+  num_epochs: 200
+  batch_size: 32
+  num_workers: 4
+  upsample_scale: 1   # 1 = no upsampling (testing this first); ConvNeXt often wants 2
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 1e-3
+  weight_decay: 1e-5

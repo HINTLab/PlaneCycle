@@ -35,12 +35,46 @@ PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters
 We utilize DINOv3 as the backbone for our 2D-to-3D lifting. 
 DINOv3 Weights: Please follow the official repository [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3) to download the pretrained checkpoints.
 
-## Requirements
-Our code is built on top of the DINOv3 framework. 
-1. DINOv3 Environment: Follow the [installation guide](https://github.com/facebookresearch/dinov3) to set up the basic dependencies.
-2. Additional Packages: medmnist, transformers
+## Environment setup
 
-All experiments are conducted on a single NVIDIA H200 GPU (141GB memory). 
+The code needs **Python 3.11** and PyTorch (2.10 / CUDA 12.8 in our runs). Pick
+either conda or uv — both install everything in one command.
+
+**conda** (creates an env named `planecycle`):
+
+```bash
+conda env create -f environment.yml
+conda activate planecycle
+```
+
+**uv** (faster; PyPI wheels only — torch's wheel bundles CUDA):
+
+```bash
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+`environment.yml` / `requirements.txt` cover PlaneCycle itself and all
+experiments (classification + segmentation), but **not** the comparison
+baselines — see below.
+
+### Baseline dependencies (optional)
+
+The comparison baselines need extra packages that are not part of the base
+environment. Install them only for the method(s) you want to reproduce:
+
+```bash
+pip install timm==1.0.25 huggingface-hub==0.36.0   # SPECTRE
+pip install lighter-zoo==0.1.3                     # CT-FM
+```
+
+PlaneCycle / Slice2D / TriSlice / Flatten3D run on the base environment alone.
+The ConvNeXt-only ACS baseline needs one more package — see
+[`docs/RESULTS_CONVNEXT.md`](docs/RESULTS_CONVNEXT.md).
+
+The ViT experiments are conducted on a single NVIDIA H200 GPU (141GB memory).
+The ConvNeXt results below use 2× upsampled input and need more memory than an
+H200 provides at batch size 32; they were run on a single NVIDIA B300 (288GB).
 
 Memory requirements on MedMNIST datasets are detailed in the paper:
 - Linear Probing: <10GB
@@ -72,68 +106,60 @@ Configure the following parameters in the converter.
 
 ```python
 import torch
-from planecycle.converters.converter import PlaneCycleConverter
+from planecycle import planecycle_converter
 
-x = torch.randn(2, 3, 64, 256, 256) # （N, 3, D, H, W）
+x = torch.randn(2, 3, 64, 256, 256)  # (B, C, D, H, W)
 
 # Load a DINOv3 ViT backbone pretrained on web images
-model = torch.hub.load(REPO_DIR, "dinov3_vits16", source="local", weights=<CHECKPOINT/URL/OR/PATH>)
+backbone = torch.hub.load(REPO_DIR, "dinov3_vits16", source="local",
+                          weights="<PATH/TO/CHECKPOINT>")
 
 # Convert the 2D backbone into a 3D PlaneCycle model
-converter = PlaneCycleConverter(cycle_order=('HW', 'DW', 'DH', 'HW'), pool_method="PCg")
-model = converter(model)
+model = planecycle_converter(backbone, cycle_order=("HW", "DW", "DH", "HW"),
+                             pool_method="PCg")
 
-out = model(x)
+xf, xcls = model(x)  # xf:   (B, D, H', W', C) spatial features; H', W' = feature
+                     #       grid (input H, W over the backbone's downsampling)
+                     # xcls: (B, D, C) per-slice global tokens
 ```
 
 ## Code Structure
 
-- `planecycle/`  
-  Core implementation of the PlaneCycle framework.
+**`planecycle/` is the method** — everything else is either the pretrained
+backbone it wraps or code for reproducing the paper's experiments.
 
-  - `operators/` – Implementation of the PlaneCycle operators.
-  - `converters/` – Converters for adapting pretrained ViT backbones.
+```
+planecycle/            the PlaneCycle operator and converter (the contribution)
+├── functional.py        plane reshaping and token pooling (pure functions)
+├── ops.py               PlaneCycleViTOp / PlaneCycleConvOp (one 2D block, one plane)
+└── converter.py         planecycle_converter: wraps a whole 2D backbone
 
-- `models/`
+dinov3/                official DINOv3 ViT / ConvNeXt, unmodified
+hubconf.py             torch.hub entry point for the DINOv3 backbones
 
-  - `vision_transformer/` – Modified Vision Transformer implementation used in this project.
+experiments/           reproduction code
+├── medmnist/            six 3D MedMNIST+ classification datasets
+├── segmentation/        LIDC and MMWHS segmentation
+└── baselines/           comparison methods (Slice2D, Flatten3D, ACS, SPECTRE)
+```
 
-- `experiments/`  
-  Scripts for running experiments and reproducing results.
+Applying PlaneCycle to your own model needs `planecycle/` only; see the example
+above.
 
-  - `medmnist/` – Training and benchmarking pipelines for six 3D MedMNIST+ datasets.
+## Results
 
-## Results on MedMNIST+ (ConvNeXt Backbones)
+The paper's ViT-S/B/L results are in [`Paper`](https://arxiv.org/abs/2603.04165)
+(Tables 1–3: linear probing, full fine-tuning, and segmentation).
 
-AUC / ACC on six MedMNIST+ 3D classification datasets. Input (64³) is upsampled to 64×128×128 before processing. All models use pretrained weights. **Bold** = best within each model scale (S/B/L) per metric.
-
-### Linear Probing
-
-| Model | Method | Organ | Nodule | Fracture | Adrenal | Vessel | Synapse | **AVG** |
-|-------|--------|-------|--------|----------|---------|--------|---------|---------|
-| ConvNeXt-S | Slice2D | 98.2 / 80.5 | 85.7 / 82.3 | 60.3 / 43.8 | 84.4 / **82.9** | 85.0 / 88.2 | **85.8** / **83.0** | 83.2 / 76.8 |
-| | ACSConv | **99.2** / 85.9 | 81.6 / 81.6 | 60.3 / 43.3 | 75.5 / 78.2 | 82.1 / 89.0 | 70.4 / 74.7 | 78.2 / 75.5 |
-| | PC (Ours) | 99.1 / **86.9** | **86.4** / **82.6** | **61.1** / **44.6** | **86.8** / **82.9** | **86.9** / **90.0** | 82.7 / 82.1 | **83.8** / **78.2** |
-| ConvNeXt-B | Slice2D | 97.8 / 79.2 | 82.8 / 78.1 | **66.7** / 48.8 | 78.7 / 79.5 | 84.4 / 88.7 | **87.0** / **83.8** | 82.9 / 76.3 |
-| | ACSConv | 98.7 / 83.0 | 86.6 / **83.9** | 64.7 / **50.4** | 82.3 / 80.2 | 83.2 / **90.0** | 74.4 / 79.0 | 81.7 / 77.7 |
-| | PC (Ours) | **99.3** / **87.4** | **87.9** / 83.2 | 57.0 / 43.8 | **90.2** / **85.2** | **85.3** / 88.2 | 82.8 / 80.7 | **83.7** / **78.1** |
-| ConvNeXt-L | Slice2D | 98.2 / 80.3 | 87.2 / **87.4** | **64.0** / 43.8 | 77.5 / 79.9 | 81.2 / **89.8** | **86.3** / **83.0** | 82.4 / 77.3 |
-| | ACSConv | **99.5** / **89.0** | **87.9** / 83.5 | 63.1 / **50.0** | 84.4 / 81.5 | 82.3 / 88.0 | 78.0 / 79.8 | 82.5 / **78.6** |
-| | PC (Ours) | 99.4 / 87.9 | 82.7 / 80.0 | 58.4 / 43.8 | **87.7** / **83.9** | **89.0** / **89.8** | 84.4 / 80.1 | **83.6** / 77.6 |
-
-### Full Fine-Tuning
-
-| Model | Method | Organ | Nodule | Fracture | Adrenal | Vessel | Synapse | **AVG** |
-|-------|--------|-------|--------|----------|---------|--------|---------|---------|
-| ConvNeXt-S | Slice2D | 98.5 / 85.9 | 87.3 / 84.5 | 54.2 / 40.0 | 79.5 / 77.8 | 81.8 / 91.6 | 91.6 / 84.1 | 82.2 / 77.3 |
-| | ACSConv | **99.9** / **96.1** | **91.5** / **87.1** | **69.7** / **51.7** | 66.8 / 76.8 | **94.9** / 91.9 | **96.2** / 90.9 | 86.5 / 82.4 |
-| | PC (Ours) | **99.9** / 93.9 | 90.7 / 84.8 | 68.1 / 48.3 | **91.1** / **86.6** | 85.8 / **93.5** | 96.0 / **91.5** | **88.6** / **83.1** |
-| ConvNeXt-B | Slice2D | 97.9 / 83.6 | 89.4 / 86.5 | 70.5 / 50.0 | 77.6 / 76.2 | 89.5 / 93.2 | 95.5 / 90.1 | 86.7 / 79.9 |
-| | ACSConv | **100.0** / **97.4** | 92.2 / 86.5 | 57.1 / 37.5 | **87.9** / **85.6** | **96.5** / **94.5** | **97.0** / 91.5 | 88.4 / 82.2 |
-| | PC (Ours) | 99.9 / 96.9 | **94.3** / **87.1** | **73.3** / **60.0** | 84.6 / 77.2 | 90.1 / 91.1 | 96.5 / **92.9** | **89.8** / **84.2** |
-| ConvNeXt-L | Slice2D | 97.8 / 78.8 | **93.9** / 86.5 | 66.6 / 45.8 | 75.5 / 78.9 | 82.7 / 91.4 | 94.8 / 92.0 | 85.2 / 78.9 |
-| | ACSConv | **100.0** / **97.5** | 89.4 / **87.7** | 61.8 / 37.5 | **89.4** / 85.6 | 82.8 / 86.4 | 97.2 / 93.2 | 86.8 / 81.3 |
-| | PC (Ours) | 99.9 / 95.2 | 93.6 / **87.7** | **68.1** / **48.3** | **89.4** / **85.9** | **96.5** / **93.5** | **98.4** / **95.7** | **91.0** / **84.4** |
+PlaneCycle on the DINOv3 **ConvNeXt** backbones — follow-up work beyond the
+paper — is reported separately in
+[`docs/RESULTS_CONVNEXT.md`](docs/RESULTS_CONVNEXT.md).
 
 ## How to run the experiments
-* six 3D classification datasets(./experiments/medmnist/train_eval.py)
+
+| Experiment | Entry point | Docs |
+|---|---|---|
+| MedMNIST+ 3D classification (six datasets) | `experiments/medmnist/train_eval.py` | [`experiments/medmnist/README.md`](experiments/medmnist/README.md) |
+| Paper sweeps on Slurm (all methods × datasets × seeds) | `experiments/medmnist/scripts/submit.sh` | [`experiments/medmnist/scripts/README.md`](experiments/medmnist/scripts/README.md) |
+| LIDC / MMWHS segmentation | `experiments/segmentation/seg_training.py` | [`experiments/segmentation/README.md`](experiments/segmentation/README.md) |
+| Comparison baselines | selected via `--block_type` | [`experiments/baselines/dinov3/README.md`](experiments/baselines/dinov3/README.md) |

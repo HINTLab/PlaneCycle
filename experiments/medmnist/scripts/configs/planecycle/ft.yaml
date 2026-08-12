@@ -1,0 +1,45 @@
+# PlaneCycle (the paper's method) on DINOv3 backbones — Fine-Tuning.
+# Sweep definition only; private paths come from scripts/paths.yaml.
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+# keys of config.py MODEL_WEIGHTS_MAP
+archs:
+#  - dinov3_vits16
+  - dinov3_vitb16
+#  - dinov3_vitl16
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+block_types:
+  - PlaneCycle
+# PlaneCycle-specific (ignored by ConvNeXt archs — they have no global tokens)
+pool_methods:
+  - PCg
+  - PCm
+cycle_orders:
+  - HW DW DH HW
+  # - HW DW DH
+  # - HW DH DW
+final_pool_methods:
+  - learn_to_pool
+  # - mean
+resolutions:
+  - 64
+train_args:
+  training_method: FT
+  num_epochs: 100
+  batch_size: 32
+  num_workers: 4
+  upsample_scale: 1   # H/W upsample before backbone (any arch); convnext may want 2
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 5e-5
+  weight_decay: 0.05

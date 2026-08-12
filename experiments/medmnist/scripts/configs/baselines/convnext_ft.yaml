@@ -1,0 +1,40 @@
+# DINOv3 ConvNeXt lifting baselines — Fine-Tuning.
+# ConvNeXt supports Slice2D (and TriSlice via a Slice2D backbone); Flatten3D
+# is ViT-only. See convnext_lp.yaml.
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+archs:
+#  - dinov3_convnext_tiny
+#  - dinov3_convnext_small
+  - dinov3_convnext_base
+#  - dinov3_convnext_large
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+# Baseline methods to run — uncomment the ones you want; all enabled are swept.
+#   Slice2D (2D) | TriSlice (2.5D)   (Flatten3D is ViT-only)
+block_types:
+  - Slice2D
+  # - TriSlice
+final_pool_methods:
+  - learn_to_pool
+resolutions:
+  - 64
+train_args:
+  training_method: FT
+  num_epochs: 100
+  batch_size: 32
+  num_workers: 4
+  upsample_scale: 1   # 1 = no upsampling (testing this first); ConvNeXt often wants 2
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 5e-5
+  weight_decay: 0.05

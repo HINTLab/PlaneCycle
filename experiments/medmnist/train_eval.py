@@ -1,28 +1,29 @@
 import argparse
 import os
 import random
+import sys
 import time
 from collections import OrderedDict
 from copy import deepcopy
+from pathlib import Path
+
+# repo root on sys.path so dinov3/, planecycle/ and experiments/baselines/
+# resolve when running this script directly from experiments/medmnist/
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import medmnist
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.data as data
 import wandb
-from PIL import Image
 from medmnist import INFO
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
-from torchvision.transforms import v2
 from tqdm import tqdm, trange
 
-from planecycle.converters.converter import PlaneCycleConverter
-from planecycle.converters.random_plane_converter import RandomPlaneCycleConverter
-from planecycle.converters.mlp_plane_converter import MLPPlaneCycleConverter
-
 from config import MODEL_WEIGHTS_MAP
+from loaders import load_ctfm_model, load_model, load_spectre_model
+from transforms import Lifted2DTransform, Native3DTransform
 
 
 def set_rng_seed(seed: int) -> None:
@@ -33,525 +34,22 @@ def set_rng_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def get_device(gpu_ids: str) -> torch.device:
-    visible_gpu_ids = [int(gid) for gid in gpu_ids.split(",") if int(gid) >= 0]
-    if visible_gpu_ids:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(visible_gpu_ids[0])
-    device = (
-        torch.device(f"cuda:{visible_gpu_ids[0]}")
-        if torch.cuda.is_available()
-        else torch.device("cpu")
-    )
-    print(f"[*] Running on device: {device}")
-    return device
-
-
-class Transform3D(nn.Module):
-    def __init__(self, mode="val", resolution=64, target_resolution=64):
-        super().__init__()
-        self.mode = "train" if "train" in mode else "val"
-        self.register_buffer(
-            "mean", torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1, 1)
+def get_device(gpu_ids: str) -> tuple[torch.device, list[int]]:
+    requested = [int(gid) for gid in gpu_ids.split(",") if int(gid) >= 0]
+    if not torch.cuda.is_available():
+        print("[*] CUDA unavailable; running on CPU")
+        return torch.device("cpu"), []
+    if not requested:
+        requested = [0]
+    invalid = [gid for gid in requested if gid >= torch.cuda.device_count()]
+    if invalid:
+        raise ValueError(
+            f"Requested GPU ids {invalid}, but only {torch.cuda.device_count()} "
+            "CUDA devices are visible"
         )
-        self.register_buffer(
-            "std", torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1, 1)
-        )
-
-        need_resize = target_resolution != resolution
-        pad_size = max(1, 4 * (target_resolution // resolution)) if need_resize else 4
-
-        core_spatial_aug = [
-            v2.RandomCrop(
-                size=target_resolution, padding=pad_size, padding_mode="reflect"
-            ),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomVerticalFlip(p=0.5),
-            v2.RandomChoice(
-                [
-                    v2.RandomRotation(degrees=(90, 90)),
-                    v2.RandomRotation(degrees=(180, 180)),
-                    v2.RandomRotation(degrees=(270, 270)),
-                    v2.Identity(),
-                ]
-            ),
-        ]
-
-        if need_resize:
-            self.train_aug = v2.Compose(
-                [
-                    v2.Resize(
-                        size=target_resolution,
-                        interpolation=v2.InterpolationMode.BILINEAR,
-                    ),
-                    *core_spatial_aug,
-                ]
-            )
-            self.val_test_aug = v2.Resize(
-                size=target_resolution, interpolation=v2.InterpolationMode.BILINEAR
-            )
-        else:
-            self.train_aug = v2.Compose(core_spatial_aug)
-            self.val_test_aug = v2.Identity()
-
-    def forward(self, x):
-        if not isinstance(x, torch.Tensor):
-            x = np.array(x) if isinstance(x, Image.Image) else x
-            x = torch.from_numpy(x).float()
-        if x.max() > 100:
-            x = x / 255
-        if x.ndim == 3:
-            x = x.unsqueeze(0)
-        elif x.ndim == 2:
-            x = x.unsqueeze(0).unsqueeze(0)
-        x = self.train_aug(x) if self.mode == "train" else self.val_test_aug(x)
-        if x.shape[0] == 1:
-            x = x.expand(3, -1, -1, -1)
-        return (x - self.mean) / self.std
-
-
-class Transform3DSPECTRE(nn.Module):
-    """Same spatial augmentation as Transform3D but for SPECTRE:
-    - Single channel (no RGB expansion)
-    - No ImageNet normalization — SPECTRE expects values in [0, 1]
-    """
-
-    def __init__(self, mode="val", resolution=64, target_resolution=64):
-        super().__init__()
-        self.mode = "train" if "train" in mode else "val"
-
-        need_resize = target_resolution != resolution
-        pad_size = max(1, 4 * (target_resolution // resolution)) if need_resize else 4
-
-        core_spatial_aug = [
-            v2.RandomCrop(
-                size=target_resolution, padding=pad_size, padding_mode="reflect"
-            ),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomVerticalFlip(p=0.5),
-            v2.RandomChoice(
-                [
-                    v2.RandomRotation(degrees=(90, 90)),
-                    v2.RandomRotation(degrees=(180, 180)),
-                    v2.RandomRotation(degrees=(270, 270)),
-                    v2.Identity(),
-                ]
-            ),
-        ]
-
-        if need_resize:
-            self.train_aug = v2.Compose(
-                [
-                    v2.Resize(
-                        size=target_resolution,
-                        interpolation=v2.InterpolationMode.BILINEAR,
-                    ),
-                    *core_spatial_aug,
-                ]
-            )
-            self.val_test_aug = v2.Resize(
-                size=target_resolution, interpolation=v2.InterpolationMode.BILINEAR
-            )
-        else:
-            self.train_aug = v2.Compose(core_spatial_aug)
-            self.val_test_aug = v2.Identity()
-
-    def forward(self, x):
-        if not isinstance(x, torch.Tensor):
-            x = np.array(x) if isinstance(x, Image.Image) else x
-            x = torch.from_numpy(x).float()
-        if x.max() > 100:
-            x = x / 255.0
-        if x.ndim == 3:
-            x = x.unsqueeze(0)
-        elif x.ndim == 2:
-            x = x.unsqueeze(0).unsqueeze(0)
-        x = self.train_aug(x) if self.mode == "train" else self.val_test_aug(x)
-        # Single channel, values in [0, 1] — no ImageNet normalize
-        return x
-
-
-def upsample_hw(x, scale_factor=2, mode="trilinear"):
-    """
-    Upsample only H and W dimensions, keep D unchanged.
-
-    Args:
-        x: (B, C, D, H, W)
-        scale_factor: int or float
-        mode: "trilinear" or "nearest"
-
-    Returns:
-        x: (B, C, D, H*scale, W*scale)
-    """
-    x = F.interpolate(
-        x,
-        scale_factor=(1, scale_factor, scale_factor),
-        mode=mode,
-        align_corners=False if mode in ["trilinear", "bilinear"] else None,
-    )
-    return x
-
-
-class TriPlaneHead(nn.Module):
-    """Three-plane 3D feature extraction via independent Slice2D forwards.
-
-    For each orthogonal plane, folds the slice axis into the batch dimension,
-    runs the full 2D backbone, mean-pools CLS tokens over slices → (B, C).
-    The three (B, C) vectors are summed, then classified.
-
-    Planes:
-        HW: fold D → (B*D, 3, H, W) → backbone → mean CLS over D → (B, C)
-        DW: fold H → (B*H, 3, D, W) → backbone → mean CLS over H → (B, C)
-        DH: fold W → (B*W, 3, D, H) → backbone → mean CLS over W → (B, C)
-
-    use_mlp=True  (TriPlane):    sum → Linear(C, C) → GELU → Linear(C, n_classes)
-    use_mlp=False (TriPlaneSum): sum → Linear(C, n_classes)
-    Backbone weights are shared across all three planes (training-free).
-    """
-
-    def __init__(
-        self,
-        *,
-        backbone,
-        n_classes,
-        embed_dim,
-        upsample_scale=1,
-        use_mlp=True,
-        use_cat=False,
-        independent_backbones=False,
-    ):
-        import copy
-
-        super().__init__()
-        self.upsample_scale = upsample_scale
-        self.use_cat = use_cat
-        self.independent_backbones = independent_backbones
-        if independent_backbones:
-            print(f"[*] TriPlaneHead: using independent backbones")
-            self.backbone_hw = backbone
-            self.backbone_dw = copy.deepcopy(backbone)
-            self.backbone_dh = copy.deepcopy(backbone)
-        else:
-            self.backbone = backbone
-        in_dim = embed_dim * 3 if use_cat else embed_dim
-        if use_mlp:
-            self.head = nn.Sequential(
-                nn.Linear(in_dim, embed_dim),
-                nn.GELU(),
-                nn.Linear(embed_dim, n_classes),
-            )
-        else:
-            self.head = nn.Linear(in_dim, n_classes)
-            print(f"[*] {'TriPlaneCat' if use_cat else 'TriPlaneSum'}: no MLP head")
-
-    def _forward_plane(
-        self, x: torch.Tensor, plane: str, backbone=None
-    ) -> torch.Tensor:
-        """Run backbone on one plane; returns mean CLS (B, C).
-
-        Args:
-            x:        (B, 3, D, H, W)
-            plane:    'HW' | 'DW' | 'DH'
-            backbone: backbone module to use; defaults to self.backbone
-        Returns:
-            (B, C) — mean CLS token over the slice axis of this plane
-        """
-        if backbone is None:
-            backbone = self.backbone
-        B = x.shape[0]
-        if plane == "HW":
-            x_in, n_slices = x, x.shape[2]  # fold D
-        elif plane == "DW":
-            x_in = x.permute(0, 1, 3, 2, 4).contiguous()  # (B,3,H,D,W) — fold H
-            n_slices = x.shape[3]
-        else:  # DH
-            x_in = x.permute(0, 1, 4, 2, 3).contiguous()  # (B,3,W,D,H) — fold W
-            n_slices = x.shape[4]
-        # backbone returns (patch_tokens, cls_tokens)
-        # cls_tokens: (B*n_slices, 1, C)
-        _, cls = backbone(x_in)
-        return cls.squeeze(1).reshape(B, n_slices, -1).mean(dim=1)  # (B, C)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.upsample_scale > 1:
-            x = upsample_hw(x, scale_factor=self.upsample_scale)
-        if self.independent_backbones:
-            hw = self._forward_plane(x, "HW", self.backbone_hw)
-            dw = self._forward_plane(x, "DW", self.backbone_dw)
-            dh = self._forward_plane(x, "DH", self.backbone_dh)
-        else:
-            hw = self._forward_plane(x, "HW")
-            dw = self._forward_plane(x, "DW")
-            dh = self._forward_plane(x, "DH")
-        if self.use_cat:
-            feat = torch.cat([hw, dw, dh], dim=-1)  # (B, 3C)
-        else:
-            feat = hw + dw + dh  # (B, C)
-        return self.head(feat)
-
-
-class Dinov3Linear(nn.Module):
-    def __init__(
-        self,
-        *,
-        backbone,
-        n_classes,
-        embed_dim,
-        final_pool_method: str = "learn_to_pool",
-        upsample_scale=False,
-        block_type="PlaneCycle",
-        final_slices=64,
-        channels_data: str = "repeated",
-    ):
-        super().__init__()
-        self.backbone = backbone
-        self.final_pool_method = final_pool_method
-        if self.final_pool_method == "learn_to_pool":
-            self.pool_slices = nn.Linear(final_slices, 1)
-        self.linear_head = nn.Linear(embed_dim, n_classes)
-        self.upsample_scale = upsample_scale
-        self.block_type = block_type
-        self.channels_data = channels_data
-
-    @staticmethod
-    def _make_tri_slice(x: torch.Tensor) -> torch.Tensor:
-        """Replace 3 identical grayscale channels with (prev, curr, next) slices.
-
-        Args:
-            x: (B, 3, D, H, W) — channels are replicated grayscale
-        Returns:
-            (B, 3, D, H, W) — channels are slice d-1, d, d+1 (replicate-padded)
-        """
-        # print(f"[*] TriSlice: _make_tri_slice")
-        gray = x[:, 0:1, :, :, :]  # (B, 1, D, H, W)
-        # replicate-pad D by 1 on each side → (B, 1, D+2, H, W)
-        gray_pad = F.pad(gray, (0, 0, 0, 0, 1, 1), mode="replicate")
-        D = x.shape[2]
-        prev = gray_pad[:, :, 0:D, :, :]
-        curr = gray_pad[:, :, 1 : D + 1, :, :]
-        next_ = gray_pad[:, :, 2 : D + 2, :, :]
-        return torch.cat([prev, curr, next_], dim=1)  # (B, 3, D, H, W)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args: x: (B, 3, D, H, W)
-        Returns:
-            xf: spatial features (B, D, H, W, C)
-            xcls: CLS token per slice (B, D, C)
-        """
-        B, _, D, _, _ = x.shape
-        if self.upsample_scale > 1:
-            x = upsample_hw(x, scale_factor=self.upsample_scale)  # → (B, C, D, 2H, 2W)
-        if self.block_type == "TriSlice" or self.channels_data == "neighbors":
-            x = self._make_tri_slice(x)
-        xf, xcls = self.backbone(x)
-
-        if self.block_type == "Flatten3D":
-            return self.linear_head(xcls)
-
-        if self.final_pool_method == "learn_to_pool":
-            xcls = self.pool_slices(xcls.permute(0, 2, 1)).squeeze(
-                -1
-            )  # (B, D, C) -> (B, C)
-        elif self.final_pool_method == "mean":
-            xcls = xcls.mean(dim=1)  # (B, D, C) -> (B, C)
-        else:
-            raise ValueError(f"Unknown final_pool_method: {self.final_pool_method}")
-
-        return self.linear_head(xcls)
-
-
-class SpectreLinearHead(nn.Module):
-    """Linear probe head for SPECTRE backbone.
-
-    Wraps a SPECTRE VisionTransformer (global_pool='') and applies a linear
-    classifier on the CLS token. Handles the axis permutation from our
-    (B, C, D, H, W) convention to SPECTRE's (B, C, H, W, D).
-    """
-
-    def __init__(self, *, backbone, n_classes, embed_dim):
-        super().__init__()
-        self.backbone = backbone
-        self.linear_head = nn.Linear(embed_dim, n_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 1, D, H, W) → (B, 1, H, W, D) for SPECTRE
-        x = x.permute(0, 1, 3, 4, 2).contiguous()
-        features = self.backbone(x)  # (B, T+1, embed_dim)  global_pool=''
-        cls = features[:, 0, :]  # CLS token → (B, embed_dim)
-        return self.linear_head(cls)
-
-
-class CTFMLinearHead(nn.Module):
-    """Linear probe head for CT-FM (SegResEncoder) backbone.
-
-    Applies global average pooling on the deepest encoder feature map
-    to produce a fixed-length embedding, then classifies with a linear head.
-    Input: (B, 1, D, H, W), values in [0, 1].
-    """
-
-    def __init__(self, *, backbone, n_classes, embed_dim):
-        super().__init__()
-        self.backbone = backbone
-        self.linear_head = nn.Linear(embed_dim, n_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, 1, D, H, W)
-        features = self.backbone(x)[-1]  # (B, C, d, h, w)
-        cls = F.adaptive_avg_pool3d(features, 1).flatten(1)  # (B, C)
-        return self.linear_head(cls)
-
-
-def load_model(args, device, n_classes):
-    # TriPlane / TriPlaneSum / TriPlaneCat / TriSlice use a plain Slice2D backbone
-    _backbone_block_type = (
-        "Slice2D"
-        if args.block_type in ("TriPlane", "TriPlaneSum", "TriPlaneCat", "TriSlice")
-        else args.block_type
-    )
-    backbone = torch.hub.load(
-        args.repo_path,
-        args.arch,
-        source="local",
-        pretrained=False,
-        block_type=_backbone_block_type,
-        disable_converter=args.disable_converter,
-        pool_D=args.pool_D,
-    )
-
-    weights_path = os.path.join(args.weight_dir, MODEL_WEIGHTS_MAP[args.arch])
-    print(f"[*] Loading weights: {weights_path}")
-
-    pretrained_weights = torch.load(weights_path, map_location=device)
-    if args.block_type == "Flatten3D":
-        unwanted_key = "rope_embed.periods"
-        if unwanted_key in pretrained_weights:
-            print(
-                f"Removing {unwanted_key} from state_dict to avoid dimension mismatch."
-            )
-            del pretrained_weights[unwanted_key]
-    if args.block_type != "Conv3D":
-        backbone.load_state_dict(pretrained_weights, strict=True)
-
-    embed_dim = backbone.embed_dim
-    if args.block_type in ("TriPlane", "TriPlaneSum", "TriPlaneCat"):
-        model = TriPlaneHead(
-            backbone=backbone,
-            n_classes=n_classes,
-            embed_dim=embed_dim,
-            upsample_scale=args.upsample_scale,
-            use_mlp=(args.block_type == "TriPlane"),
-            use_cat=(args.block_type == "TriPlaneCat"),
-            independent_backbones=args.independent_backbones,
-        )
-    else:
-        if args.block_type == "PlaneCycle":
-            if args.pool_method == "PCmlp":
-                backbone = MLPPlaneCycleConverter(
-                    backbone=backbone,
-                    cycle_order=args.cycle_order,
-                    pool_method="PCg",
-                    resolution=args.target_resolution,
-                    patch_size=backbone.patch_size,
-                )
-            else:
-                converter_cls = (
-                    RandomPlaneCycleConverter
-                    if args.random_plane
-                    else PlaneCycleConverter
-                )
-                backbone = converter_cls(
-                    backbone=backbone,
-                    cycle_order=args.cycle_order,
-                    pool_method=args.pool_method,
-                )
-
-        model = Dinov3Linear(
-            backbone=backbone,
-            n_classes=n_classes,
-            embed_dim=embed_dim,
-            final_pool_method=args.final_pool_method,
-            block_type=args.block_type,
-            final_slices=args.D_slices,
-            upsample_scale=args.upsample_scale,
-            channels_data=args.channels_data,
-        )
-    print(model)
-
-    if args.training_method == "LP":
-        if isinstance(model, TriPlaneHead) and model.independent_backbones:
-            for bb in (model.backbone_hw, model.backbone_dw, model.backbone_dh):
-                for param in bb.parameters():
-                    param.requires_grad = False
-        else:
-            for name, param in model.backbone.named_parameters():
-                param.requires_grad = False
-        # slice_proj is a new 3D-adaptation parameter, not pretrained — keep trainable
-        if isinstance(model.backbone, MLPPlaneCycleConverter):
-            for blk in model.backbone.backbone.blocks:
-                if hasattr(blk, "slice_proj"):
-                    blk.slice_proj.weight.requires_grad = True
-                    blk.slice_proj.bias.requires_grad = True
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"[*requires_grad*] {name}: {param.shape}")
-
-    model.to(device)
-    return model
-
-
-def load_spectre_model(args, device, n_classes):
-    import sys
-
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-    from spectre.models.vision_transformer import vit_large_patch16_128
-
-    print(f"[*] Loading SPECTRE backbone from: {args.spectre_weight_path}")
-    backbone = vit_large_patch16_128(
-        checkpoint_path_or_url=args.spectre_weight_path,
-        num_classes=0,
-        global_pool="",
-        pos_embed="rope",
-        rope_kwargs={"base": 1000.0},
-        init_values=1.0,
-    )
-    embed_dim = backbone.embed_dim  # 1080
-
-    model = SpectreLinearHead(
-        backbone=backbone, n_classes=n_classes, embed_dim=embed_dim
-    )
-    print(model)
-
-    if args.training_method == "LP":
-        for param in model.backbone.parameters():
-            param.requires_grad = False
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"[*requires_grad*] {name}: {param.shape}")
-
-    model.to(device)
-    return model
-
-
-def load_ctfm_model(args, device, n_classes):
-    from lighter_zoo import SegResEncoder
-
-    backbone = SegResEncoder.from_pretrained("project-lighter/ct_fm_feature_extractor")
-    embed_dim = backbone.init_filters * (2 ** (len(backbone.blocks_down) - 1))
-    model = CTFMLinearHead(backbone=backbone, n_classes=n_classes, embed_dim=embed_dim)
-    print(model)
-
-    if args.training_method == "LP":
-        for param in model.backbone.parameters():
-            param.requires_grad = False
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"[*requires_grad*] {name}: {param.shape}")
-
-    model.to(device)
-    return model
+    device = torch.device(f"cuda:{requested[0]}")
+    print(f"[*] Running on GPU(s): {requested}; primary device: {device}")
+    return device, requested
 
 
 def build_scheduler(args, optimizer):
@@ -584,8 +82,7 @@ def init_wandb_run(args):
     return wandb.init(
         entity=args.entity,
         project=args.project_name,
-        name=args.run_name
-        or f"{args.data_flag}_{args.arch}_{args.block_type}_{args.pool_method}",
+        name=args.run_name,  # None -> W&B auto-generates; the launcher passes one
         config={
             "dataset": args.data_flag,
             "architecture": args.arch,
@@ -606,10 +103,10 @@ def init_wandb_run(args):
             "num_workers": args.num_workers,
             "seed": args.seed,
             "upsample_scale": args.upsample_scale,
+            "channels_data": args.channels_data,
             "disable_converter": args.disable_converter,
             "D_slices": args.D_slices,
             "as_rgb": args.as_rgb,
-            "pool_D": args.pool_D,
             "model_family": getattr(args, "model_family", "dinov3"),
             "spectre_weight_path": getattr(args, "spectre_weight_path", None),
         },
@@ -661,8 +158,8 @@ def test(model, evaluator, data_loader, task, criterion, device, run, save_folde
 
 
 def main(args):
+    device, gpu_ids = get_device(args.gpu_ids)
     set_rng_seed(args.seed)
-    device = get_device(args.gpu_ids)
     output_root = os.path.join(
         args.output_root, args.data_flag, time.strftime("%y%m%d_%H%M%S")
     )
@@ -675,18 +172,18 @@ def main(args):
     data_class = getattr(medmnist, info["python_class"])
 
     if args.model_family in ["spectre", "ctfm"]:
-        train_transform = Transform3DSPECTRE(
+        train_transform = Native3DTransform(
             mode="train", resolution=args.size, target_resolution=args.target_resolution
         )
-        eval_transform = Transform3DSPECTRE(
+        eval_transform = Native3DTransform(
             mode="val", resolution=args.size, target_resolution=args.target_resolution
         )
         dataset_kwargs = dict(download=args.download, as_rgb=False, size=args.size)
     else:
-        train_transform = Transform3D(
+        train_transform = Lifted2DTransform(
             mode="train", resolution=args.size, target_resolution=args.target_resolution
         )
-        eval_transform = Transform3D(
+        eval_transform = Lifted2DTransform(
             mode="val", resolution=args.size, target_resolution=args.target_resolution
         )
         dataset_kwargs = dict(
@@ -739,7 +236,7 @@ def main(args):
     elif args.model_family == "ctfm":
         model = load_ctfm_model(args, device, n_classes)
     else:
-        model = load_model(args, device, n_classes).to(device)
+        model = load_model(args, device, n_classes)
 
     if args.model_path is not None:
         model.load_state_dict(
@@ -778,6 +275,12 @@ def main(args):
         print(
             f"train  auc: {train_metrics[1]:.5f}  acc: {train_metrics[2]:.5f}\nval    auc: {val_metrics[1]:.5f}  acc: {val_metrics[2]:.5f}\ntest   auc: {test_metrics[1]:.5f}  acc: {test_metrics[2]:.5f}"
         )
+
+    if len(gpu_ids) > 1:
+        model = nn.DataParallel(
+            model, device_ids=gpu_ids, output_device=gpu_ids[0]
+        )
+        print(f"[*] Enabled nn.DataParallel on {len(gpu_ids)} GPUs: {gpu_ids}")
 
     if args.num_epochs == 0:
         return
@@ -848,9 +351,10 @@ def main(args):
             best_epoch, best_auc, best_model = epoch, cur_auc, deepcopy(model)
             print(f"cur_best_auc: {best_auc}, cur_best_epoch: {best_epoch}")
             wandb.run.summary.update({"best_auc": best_auc, "best_epoch": best_epoch})
-            # torch.save(model.state_dict())
+            # torch.save({"net": best_model.state_dict()},
+            #            os.path.join(output_root, "best_model.pth"))
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     train_metrics = test(
         best_model,
@@ -939,7 +443,8 @@ def build_parser():
         "--gpu_ids",
         default="0",
         type=str,
-        help='Comma-separated GPU ids, e.g. "0" or "0,1".',
+        help="Comma-separated CUDA device ids. One id uses a single GPU; "
+        "multiple ids enable nn.DataParallel, e.g. --gpu_ids=0,1.",
     )
     exp.add_argument(
         "--num_workers",
@@ -959,10 +464,25 @@ def build_parser():
     # Dataset arguments
     dset = parser.add_argument_group("dataset")
     dset.add_argument(
-        "--data_flag", default="organmnist3d", type=str, help="MedMNIST dataset name."
+        "--data_flag",
+        default="organmnist3d",
+        type=str,
+        choices=[
+            "organmnist3d",
+            "nodulemnist3d",
+            "adrenalmnist3d",
+            "fracturemnist3d",
+            "vesselmnist3d",
+            "synapsemnist3d",
+        ],
+        help="MedMNIST 3D dataset name.",
     )
     dset.add_argument(
-        "--size", default=64, type=int, help="Original dataset image size."
+        "--size",
+        default=64,
+        type=int,
+        choices=[28, 64],
+        help="Original dataset image size.",
     )
     dset.add_argument(
         "--target_resolution",
@@ -974,7 +494,7 @@ def build_parser():
         "--upsample_scale",
         default=1,
         type=int,
-        help="Upsample image before feeding to backbone.",
+        help="Upsample H/W by this factor before the backbone (D unchanged).",
     )
     dset.add_argument(
         "--batch_size",
@@ -1012,7 +532,8 @@ def build_parser():
         "--scheduler",
         default="WarmupCosineAnnealingLR",
         type=str,
-        help="Learning-rate scheduler: MultiStepLR, CosineAnnealingLR, or WarmupCosineAnnealingLR.",
+        choices=["MultiStepLR", "CosineAnnealingLR", "WarmupCosineAnnealingLR"],
+        help="Learning-rate scheduler.",
     )
 
     # Model arguments
@@ -1021,63 +542,63 @@ def build_parser():
         "--training_method",
         default="LP",
         type=str,
-        help="Training mode: LP(linear probing) or FT(finetune).",
+        choices=["LP", "FT"],
+        help="LP (linear probing: backbone frozen) or FT (finetune).",
     )
     mdl.add_argument(
         "--channels_data",
         default="repeated",
         type=str,
-        help="Training mode: LP(linear probing) or FT(finetune).",
-    )
-    mdl.add_argument(
-        "--repo_path",
-        default=os.path.join(os.path.dirname(__file__), "..", "..", "models"),
-        type=str,
-        help="Local torch.hub repository path.",
+        choices=["repeated", "neighbors"],
+        help="Input channel encoding: repeated grayscale, or neighbouring "
+        "slices (d-1, d, d+1). TriSlice implies neighbors.",
     )
     mdl.add_argument(
         "--weight_dir",
         default=None,
         type=str,
-        help="Path to pretrained backbone weights.",
+        help="Directory holding the pretrained backbone weights "
+        "(filenames in config.py MODEL_WEIGHTS_MAP).",
     )
     mdl.add_argument(
-        "--arch", default="dinov3_vits16", type=str, help="Backbone architecture name."
+        "--arch",
+        default="dinov3_vits16",
+        type=str,
+        choices=sorted(MODEL_WEIGHTS_MAP),
+        help="Backbone architecture (keys of config.py MODEL_WEIGHTS_MAP).",
     )
     mdl.add_argument(
         "--block_type",
         default="PlaneCycle",
-        type=str,
-        help='Backbone block type or "PlaneCycle".',
+        choices=["PlaneCycle", "Slice2D", "Flatten3D", "TriSlice", "ACS"],
+        help="Method: PlaneCycle, Slice2D (2D), Flatten3D (3D), TriSlice (2.5D), "
+        "ACS (native-3D ACSConv, ConvNeXt only).",
+    )
+    mdl.add_argument(
+        "--disable_converter",
+        action="store_true",
+        help="PlaneCycle only: use BaselineViT/ConvNeXt's converter-equivalent "
+        "mode instead of planecycle_converter (debug/ablation; outputs are "
+        "equivalence-tested).",
     )
     mdl.add_argument(
         "--pool_method",
-        default="",
-        type=str,
-        help="PlaneCycle pooling method, PCg or PCm.",
+        default="PCg",
+        choices=["PCg", "PCm"],
+        help="PlaneCycle global-token pooling (ViT only).",
     )
     mdl.add_argument(
         "--final_pool_method",
         default="learn_to_pool",
         type=str,
-        help="Final pooling method: mean, learn_to_pool",
+        choices=["learn_to_pool", "mean"],
+        help="Aggregation of per-slice CLS tokens into one embedding.",
     )
     mdl.add_argument(
         "--D_slices",
         default=64,
         type=int,
-        help="Number of depth slices for final pooling head.",
-    )
-    mdl.add_argument(
-        "--final_slices",
-        default=64,
-        type=int,
-        help="Number of depth slices for final pooling head.",
-    )
-    mdl.add_argument(
-        "--concat_patch_token",
-        action="store_true",
-        help="Concatenate mean patch token to CLS token.",
+        help="Depth slices seen by learn_to_pool; must match the input D.",
     )
     mdl.add_argument(
         "--cycle_order",
@@ -1086,36 +607,14 @@ def build_parser():
         default=[],
         help="Plane traversal order for PlaneCycle blocks.",
     )
-    mdl.add_argument(
-        "--random_plane",
-        action="store_true",
-        default=False,
-        help="Randomly select plane per block during training (PlaneCycle only). Last block fixed to HW.",
-    )
-    mdl.add_argument(
-        "--independent_backbones",
-        action="store_true",
-        default=False,
-        help="TriPlane only: give each plane (HW/DW/DH) its own backbone copy. Useful for FT.",
-    )
-    mdl.add_argument(
-        "--disable_converter",
-        action="store_true",
-        help="Concatenate mean patch token to CLS token.",
-    )
-    mdl.add_argument(
-        "--pool_D",
-        action="store_true",
-        help="Concatenate mean patch token to CLS token.",
-    )
 
-    # SPECTRE arguments
-    spe = parser.add_argument_group("spectre")
+    # Comparison-baseline arguments (SPECTRE / CT-FM)
+    spe = parser.add_argument_group("comparison baselines")
     spe.add_argument(
         "--model_family",
         default="dinov3",
         choices=["dinov3", "spectre", "ctfm"],
-        help='Model family to use. "spectre" activates SPECTRE backbone and Transform3DSPECTRE.',
+        help='Model family. "spectre"/"ctfm" switch to the natively-3D comparison backbones and Native3DTransform.',
     )
     spe.add_argument(
         "--spectre_weight_path",

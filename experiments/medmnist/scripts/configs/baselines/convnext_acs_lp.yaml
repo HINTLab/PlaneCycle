@@ -1,0 +1,40 @@
+# ACS baseline on DINOv3 ConvNeXt — Linear Probing.
+# ACSConv makes ConvNeXt a native-3D model (it also downsamples D), so it
+# reuses the DINOv3 ConvNeXt 2D weights but is neither a Slice2D nor a
+# PlaneCycle block_type — it is its own method. Needs `acsconv` + `timm`.
+# final_pool_method=mean because ACS downsamples D, so learn_to_pool's fixed
+# D_slices would not match the output depth.
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+archs:
+#  - dinov3_convnext_tiny
+#  - dinov3_convnext_small
+  - dinov3_convnext_base
+#  - dinov3_convnext_large
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+block_types:
+  - ACS
+final_pool_methods:
+  - mean
+resolutions:
+  - 64
+train_args:
+  training_method: LP
+  num_epochs: 200
+  batch_size: 32
+  num_workers: 4
+  upsample_scale: 1
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 1e-3
+  weight_decay: 1e-5

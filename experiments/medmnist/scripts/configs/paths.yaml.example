@@ -1,0 +1,28 @@
+# ==============================================================================
+# Template for machine-specific paths and Weights & Biases identity.
+#
+#   cp paths.yaml.example paths.yaml     # then edit paths.yaml with your values
+#
+# paths.yaml is git-ignored (stays private); this .example is committed so
+# others know what to fill in. launch.py merges paths.yaml into every config,
+# so the sweep configs stay portable and free of personal paths.
+# ==============================================================================
+
+# Weights & Biases entity: your W&B team or username (where runs are logged).
+# Find it at https://wandb.ai/settings.
+entity: your-wandb-entity
+
+# Directory holding the pretrained DINOv3 backbone weights (.pth files).
+# Filenames must match config.py -> MODEL_WEIGHTS_MAP, e.g.
+# dinov3_vits16_pretrain_lvd1689m-08c60483.pth. Download them from the DINOv3
+# repo (license-gated) into this folder.
+weight_dir: /path/to/dinov3/weights
+
+# Where train_eval.py writes each run's logs and outputs (one timestamped
+# subfolder per run). Note: analyze_wandb.py's summary CSVs go to
+# ./wandb_results, not here.
+output_root: /path/to/outputs
+
+# SPECTRE comparison-backbone checkpoint (.pt). Only needed for the fm3d
+# SPECTRE sweeps — leave as-is if you never run SPECTRE.
+spectre_weight_path: /path/to/spectre_backbone_vit_large_patch16_128_no_vla.pt

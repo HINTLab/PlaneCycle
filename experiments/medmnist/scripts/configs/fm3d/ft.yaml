@@ -1,0 +1,29 @@
+# Natively-3D comparison backbones (SPECTRE / CT-FM) — Fine-Tuning.
+# Pick the backbone by (un)commenting model_family.
+model_family: spectre
+# model_family: ctfm
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+train_args:
+  training_method: FT
+  num_epochs: 100
+  batch_size: 16      # SPECTRE FT; CT-FM used 32 — bump if you switch family
+  num_workers: 4
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 5e-5
+  min_lr: 1e-6
+  weight_decay: 0.05
+  size: 64
+  target_resolution: 64

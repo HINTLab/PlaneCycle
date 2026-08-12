@@ -1,0 +1,45 @@
+# DINOv3 lifting baselines — Fine-Tuning.
+# The 2D / 3D / 2.5D comparisons to PlaneCycle. Self-contained.
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+# keys of config.py MODEL_WEIGHTS_MAP
+archs:
+  - dinov3_vits16
+  - dinov3_vitb16
+  - dinov3_vitl16
+  # - dinov3_convnext_tiny
+  # - dinov3_convnext_small
+  # - dinov3_convnext_base
+  # - dinov3_convnext_large
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+# Baseline methods to run — uncomment the ones you want; all enabled are swept.
+#   Slice2D (2D) | Flatten3D (3D) | TriSlice (2.5D)
+block_types:
+  - Slice2D
+  # - Flatten3D
+  # - TriSlice
+final_pool_methods:
+  - learn_to_pool
+  # - mean
+resolutions:
+  - 64
+train_args:
+  training_method: FT
+  num_epochs: 100
+  batch_size: 32
+  num_workers: 4
+  upsample_scale: 1   # H/W upsample before backbone (any arch); convnext may want 2
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 5e-5
+  weight_decay: 0.05

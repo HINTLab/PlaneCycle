@@ -1,0 +1,29 @@
+name: planecycle
+# Minimal environment for PlaneCycle, curated from the code's actual imports.
+#
+# Recreate:  conda env create -f environment.yml
+# Versions match the working Triton env (Python 3.11, torch 2.10 / CUDA 12.8).
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # --- core (always needed) ---
+      # torch/torchvision: install the CUDA build matching your driver, e.g.
+      #   pip install torch==2.10.0 torchvision==0.25.0 \
+      #       --index-url https://download.pytorch.org/whl/cu128
+      # (the nvidia-*-cu12 wheels come as torch's own dependencies)
+      - torch==2.10.0
+      - torchvision==0.25.0
+      - numpy==2.2.6
+      - pandas==2.3.3            # analyze_wandb result tables
+      - pyyaml==6.0.3            # launcher configs
+      - tqdm==4.67.1
+      - pillow==12.1.0          # PIL — input transforms
+      - wandb==0.24.0           # experiment logging
+      - medmnist==3.0.2         # 3D MedMNIST datasets
+      - monai==1.5.2            # segmentation experiments (Dice loss / metrics)
+      # --- comparison baselines (ACS / SPECTRE / CT-FM) are NOT included ---
+      # install them per method only if you reproduce those baselines;
+      # see README "Environment setup" for the exact pip commands.

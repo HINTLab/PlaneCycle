@@ -1,25 +1,82 @@
-# MedMNIST
+# MedMNIST Experiments
 
-Training script for DINOv3 models on MedMNIST datasets using Linear Probing and Fine-Tuning.
+Linear Probing (LP) and Fine-Tuning (FT) of DINOv3 backbones on the
+MedMNIST 3D datasets, comparing PlaneCycle against 2D / 2.5D / 3D lifting
+baselines.
 
-# Quick Start
+**Two ways to run:**
 
-To reproduce all results, simply change `--block_type` between `PlaneCycle`, `Slice2D`, and `Flatten3D` in the commands below.
+- **Single experiment** — one `train_eval.py` command, no Slurm and no extra
+  config files. See the [Quick Start](#quick-start) below.
+- **Full paper sweeps** (methods × datasets × seeds, as Slurm array jobs) —
+  the YAML-driven launcher in [`scripts/`](scripts/README.md): copy two
+  `.example` config files, then `./submit.sh planecycle/lp`;
+  `analyze_wandb.py` collects the result tables back from W&B.
 
-**Pool Method**: `--pool_method="PCg"` is used by default. You can also try `PCm`, but note that `PCg` performs better than `PCm` in Linear Probing, while they perform similarly in Fine-Tuning.
+## Files
 
-**Final Pooling**: We use a simple learnable fusion layer (`--final_pool_method="learn_to_pool"`) to fuse features across different slices. You can also use `"mean"` for simple averaging without a learnable fusion layer.
+| File | Contents |
+|------|----------|
+| `train_eval.py` | Entry point: data pipeline, train/test loops, scheduler, W&B logging, CLI |
+| `loaders.py` | Model assembly: build backbone + classifier per CLI args, load pretrained weights (`strict=True`) |
+| `classifiers.py` | End-to-end classification models (backbone + slice aggregation + configurable head) |
+| `transforms.py` | 3D input transforms and tensor utilities (`Lifted2DTransform`, `Native3DTransform`, `make_tri_slice`, `upsample_hw`) |
+| `config.py` | Pretrained-weight filenames and backbone constructor kwargs per architecture |
 
-**3D RoPE**: `Flatten3D` uses an improved 3D Rotary Position Embedding (RoPE) that extends DINOv3's original 2D RoPE to 3D. See `models/layers/rope_position_encoding.py` for implementation details.
+The script adds the repository root to `sys.path` itself — run it directly
+from this directory, no `PYTHONPATH` needed.
 
-**Cycle Order**: The default plane traversal order for PlaneCycle is `--cycle_order "HW" "DW" "DH" "HW"` as reported in the paper. 
-You can customize this to any order, e.g., `('HW', 'DW', 'DH')` or `('HW', 'DH', 'DW')`, or even define different planes for each block. 
-We observe that different plane orders yield slight performance variations across different datasets.
+## Methods (`--block_type`)
+
+| `--block_type` | Method |
+|---|---|
+| `PlaneCycle` | cycles each block across the HW / DW / DH planes |
+| `Slice2D` | unmodified 2D model on every axial slice |
+| `TriSlice` | 2.5D: Slice2D with (d-1, d, d+1) neighbouring-slice input channels |
+| `Flatten3D` | one token sequence over the whole volume with a 3D RoPE (ViT only) |
+| `ACS` | ACS convolutions, natively 3D (ConvNeXt only) |
+
+`PlaneCycle` runs through `planecycle_converter`; the comparison methods are in
+[`experiments/baselines/dinov3/`](../baselines/dinov3/README.md), which
+documents each one. `--disable_converter` makes `PlaneCycle` use the
+equivalence-tested baseline class instead of the converter (debug/ablation).
+
+## Quick Start
+
+Backbone weights must be downloaded from the DINOv3 repository (license-gated)
+and placed in `--weight_dir`; expected filenames are in
+`config.py → MODEL_WEIGHTS_MAP`. To reproduce the paper results, sweep
+`--block_type` over the methods above.
+
+Runs are logged to Weights & Biases (`--entity`). To try things out without a
+W&B account, prefix any command with `WANDB_MODE=offline` — everything is then
+kept local.
+
+The commands below were run on a single NVIDIA H200 (141GB). Support for
+[AutoDL](https://www.autodl.com/) instances is planned for a future release.
+
+**Pool Method**: `--pool_method="PCg"` is used by default. You can also try
+`PCm`, but note that `PCg` performs better than `PCm` in Linear Probing,
+while they perform similarly in Fine-Tuning.
+
+**Final Pooling**: `--final_pool_method="learn_to_pool"` (default) fuses the
+per-slice features into one vector with a single linear layer over the slice
+axis — `nn.Linear(D, 1)`, i.e. one learned weight per slice position, shared
+across channels. `"mean"` averages the slices instead, with no learnable
+parameters.
+
+**Classification head**: a single `nn.Linear(embed_dim, n_classes)` in all
+settings.
+
+**Cycle Order**: The default plane traversal order for PlaneCycle is
+`--cycle_order "HW" "DW" "DH" "HW"` as reported in the paper. You can
+customize this to any order, e.g. `HW DW DH` or `HW DH DW`. We observe that
+different plane orders yield slight performance variations across datasets.
 
 ### Linear Probing (LP)
 
 ```bash
-python train_val.py \
+python train_eval.py \
     --weight_dir="/path/to/weights" \
     --entity="your-wandb-entity" \
     --project_name="dinov3_lp_baseline" \
@@ -44,8 +101,11 @@ python train_val.py \
 
 ### Fine-Tuning (FT)
 
+Same as above with `--training_method="FT"`, fewer epochs, a lower learning rate
+and stronger weight decay:
+
 ```bash
-python train_val.py \
+python train_eval.py \
     --weight_dir="/path/to/weights" \
     --entity="your-wandb-entity" \
     --project_name="dinov3_ft_baseline" \
@@ -70,71 +130,75 @@ python train_val.py \
 
 ## Training Parameters
 
-### Essential Parameters
+### Essential
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `--data_flag` | organmnist3d | Dataset: organmnist3d, nodulemnist3d, adrenalmnist3d, fracturemnist3d, vesselmnist3d, synapsemnist3d |
-| `--arch` | dinov3_vits16 | Model architecture: dinov3_vits16, dinov3_vitb16, dinov3_vitl16 |
-| `--batch_size` | 32 | Batch size for training |
-| `--num_epochs` | 200 | Number of training epochs |
+| `--arch` | dinov3_vits16 | Backbone: any ViT in `config.py → VIT_ARCHS` (vits16 … vit7b16) or dinov3_convnext_{tiny,small,base,large} |
+| `--training_method` | LP | LP (freeze backbone, train head) or FT (train everything) |
+| `--batch_size` | 32 | Batch size for training and evaluation |
+| `--num_epochs` | 100 | Number of training epochs |
 | `--seed` | 42 | Random seed |
 | `--output_root` | ./outputs | Output directory |
 
-### Learning Rate & Optimization
+### Method & Pooling
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--max_lr` | 1e-3 | Maximum learning rate |
-| `--min_lr` | 1e-6 | Minimum learning rate |
-| `--scheduler` | WarmupCosineAnnealingLR | Scheduler: MultiStepLR, CosineAnnealingLR, WarmupCosineAnnealingLR |
-| `--warmup_epochs` | 10 | Warmup epochs (for WarmupCosineAnnealingLR) |
-| `--weight_decay` | 1e-5 | Weight decay for AdamW |
+| `--block_type` | PlaneCycle | PlaneCycle, Slice2D, TriSlice, Flatten3D, ACS (see Methods above) |
+| `--cycle_order` | HW DW DH HW | Plane traversal order for PlaneCycle |
+| `--pool_method` | PCg | PlaneCycle global-token pooling: PCg or PCm (ViT only) |
+| `--final_pool_method` | learn_to_pool | Slice aggregation: learn_to_pool or mean |
+| `--D_slices` | 64 | Number of depth slices seen by learn_to_pool (match the input D) |
+| `--disable_converter` | – | PlaneCycle only: use the Baseline classes instead of `planecycle_converter` (debug/ablation) |
+| `--channels_data` | repeated | Input channel encoding: repeated grayscale or neighbouring slices; TriSlice implies neighbors |
 
-### Architecture & Pooling
+### Optimization
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--block_type` | PlaneCycle | Block type: PlaneCycle, Slice2D, Flatten3D |
-| `--pool_method` | PCg | Pooling: PCg or PCm (for PlaneCycle) |
-| `--final_pool_method` | learn_to_pool | Final pooling: mean, learn_to_pool, or no_pool |
-| `--cycle_order` | HW DW DH HW | Plane order for PlaneCycle |
-| `--D_slices` | 64 | Depth slices for pooling |
-| `--concat_patch_token` | - | Add flag to concatenate patch tokens |
+| `--max_lr` | 1e-3 | Initial learning rate |
+| `--min_lr` | 1e-6 | Minimum learning rate for cosine schedulers |
+| `--scheduler` | WarmupCosineAnnealingLR | MultiStepLR, CosineAnnealingLR, or WarmupCosineAnnealingLR |
+| `--warmup_epochs` | 10 | Warmup epochs (WarmupCosineAnnealingLR) |
+| `--weight_decay` | 1e-2 | Weight decay for AdamW |
 
 ### Data & I/O
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--size` | 64 | Original image size |
-| `--target_resolution` | 64 | Target resolution |
-| `--as_rgb` | - | Add flag to convert to RGB |
-| `--num_workers` | 0 | DataLoader workers |
-| `--download` | - | Add flag to auto-download datasets |
-| `--weight_dir` | - | Weights directory path |
+| `--size` | 64 | Original dataset image size: 28 or 64 |
+| `--target_resolution` | 64 | Spatial resolution after preprocessing |
+| `--upsample_scale` | 1 | Upsample H/W before the backbone (D unchanged) |
+| `--as_rgb` | – | Let the dataset repeat 1 channel to 3 |
+| `--num_workers` | 4 | DataLoader workers |
+| `--gpu_ids` | 0 | GPU id to run on (single-GPU training) |
+| `--download` | – | Auto-download MedMNIST data |
+| `--weight_dir` | – | Directory holding the pretrained backbone weights |
+| `--model_path` | – | Optional checkpoint to evaluate / warm-start from |
 
-### Logging & Checkpoints
+### Logging
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--entity` | <your_wandb_entity> | W&B entity name (required for logging) |
+| `--entity` | – | W&B entity (required for logging) |
 | `--project_name` | dinov3 | W&B project name |
-| `--run_name` | - | Custom run name |
-| `--model_path` | - | Path to pretrained checkpoint |
-| `--training_method` | LP | LP (linear probe) or FT (finetune) |
+| `--run_name` | – | Custom W&B run name |
+| `--run` | model1 | Suffix used by MedMNIST evaluator output files |
 
 ## Recommended Settings
 
-### Linear Probing vs Fine-Tuning
-
 | Setting | LP | FT |
 |---------|----|----|
-| `--training_method` | LP | FT |
 | `--num_epochs` | 200 | 100 |
 | `--max_lr` | 1e-3 | 5e-5 |
 | `--weight_decay` | 1e-5 | 0.05 |
 
 ## Notes
-- Results are logged to Weights & Biases
-- **Linear Probing (LP)**: Freezes the backbone, only trains the classification head
-- **Fine-Tuning (FT)**: Updates all parameters, requires lower learning rate and higher weight decay
+
+- Results are logged to Weights & Biases.
+- `--model_family spectre|ctfm` switches to the SPECTRE / CT-FM comparison
+  backbones used in the paper. Both need their own pretrained checkpoints and
+  extra packages that are not in the base environment — see "Baseline
+  dependencies" in the repository README.

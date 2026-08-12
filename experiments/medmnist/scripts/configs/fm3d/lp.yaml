@@ -1,0 +1,30 @@
+# Natively-3D comparison backbones (SPECTRE / CT-FM) — Linear Probing.
+# One fixed backbone, so the only sweep axis is the seed. Pick it
+# by (un)commenting model_family (spectre_weight_path lives in paths.yaml).
+model_family: spectre
+# model_family: ctfm
+seeds:
+  - 42
+#  - 123
+#  - 1024
+#  - 1337
+#  - 2026
+datasets:
+  - nodulemnist3d
+  - organmnist3d
+  - fracturemnist3d
+  - adrenalmnist3d
+  - vesselmnist3d
+  - synapsemnist3d
+train_args:
+  training_method: LP
+  num_epochs: 200
+  batch_size: 32
+  num_workers: 4
+  scheduler: WarmupCosineAnnealingLR
+  warmup_epochs: 10
+  max_lr: 1e-3
+  min_lr: 1e-6
+  weight_decay: 1e-5
+  size: 64
+  target_resolution: 64
