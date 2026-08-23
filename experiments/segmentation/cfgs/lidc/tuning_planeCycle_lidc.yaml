@@ -19,12 +19,12 @@ data_loader:
   batch_size: 4
   num_workers: 2
 backbone_model:
+  block_type: "PlaneCycle"  # Select from 'PlaneCycle', 'Slice2D' or 'Flatten3D'
   load_model:
-    repo_or_dir: "*/PlaneCycle/models"    # TODO: hubconf root dir
+    repo_or_dir: "*/PlaneCycle"    # TODO: repo root dir (contains hubconf.py)
     model: 'dinov3_vits16'
     source: 'local'
     pretrained: False
-    block_type: "PlaneCycle"  # Select from 'PlaneCycle', 'Slice2D' or 'Flatten3D'
   checkpoint_path: "*/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"   # TODO
 converter:
   cycle_order: ['HW', 'DW', 'DH', 'HW']

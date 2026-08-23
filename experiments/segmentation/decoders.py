@@ -15,7 +15,9 @@ def _get_backbone_out_indices(
     four_last: extract the four last layer, used in segmentation tasks with a bn head.
     four_even_intervals : extract outputs every 1/4 of the total number of blocks.
     """
-    n_blocks = getattr(model, "n_blocks", 1)
+    # planecycle_converter returns a wrapper module; the plain backbone sits at .backbone
+    backbone = getattr(model, "backbone", model)
+    n_blocks = getattr(backbone, "n_blocks", len(backbone.blocks))
     if backbone_out_layers == "last":
         out_indices = [n_blocks - 1]
     elif backbone_out_layers == "four_last":
@@ -33,7 +35,7 @@ def _get_backbone_out_indices(
 
 
 class ModelWithIntermediateLayers(nn.Module):
-    def __init__(self, feature_model, n, autocast_ctx, reshape=False, return_class_token=True, tuning=False):
+    def __init__(self, feature_model, n, autocast_ctx, return_class_token=True, tuning=False):
         super().__init__()
 
         self.feature_model = feature_model
@@ -44,27 +46,30 @@ class ModelWithIntermediateLayers(nn.Module):
             self.feature_model.train()
         self.n = n  # Layer indices (Sequence) or n last layers (int) to take
         self.autocast_ctx = autocast_ctx
-        self.reshape = reshape
         self.return_class_token = return_class_token
+
+    def _extract(self, images):
+        features = self.feature_model.get_intermediate_layers(
+            images,
+            n=self.n,
+            return_class_token=self.return_class_token,
+        )
+        # get_intermediate_layers returns channels-last xf (B, D, H, W, C);
+        # the decoder consumes channels-first (B, C, D, H, W)
+        if self.return_class_token:
+            return tuple(
+                (xf.permute(0, 4, 1, 2, 3).contiguous(), xcls) for xf, xcls in features
+            )
+        return tuple(xf.permute(0, 4, 1, 2, 3).contiguous() for xf in features)
 
     def forward(self, images):
         if not self.tuning:
             with torch.inference_mode():
                 with self.autocast_ctx():
-                    features = self.feature_model.get_intermediate_layers(
-                        images,
-                        n=self.n,
-                        reshape=self.reshape,
-                        return_class_token=self.return_class_token,
-                    )
+                    features = self._extract(images)
         else:
             with self.autocast_ctx():
-                features = self.feature_model.get_intermediate_layers(
-                    images,
-                    n=self.n,
-                    reshape=self.reshape,
-                    return_class_token=self.return_class_token,
-                )
+                features = self._extract(images)
         return features
 
 
@@ -218,7 +223,9 @@ def build_segmentation_decoder(
         tuning=False,
         autocast_dtype=torch.float32,
 ):
-    patch_size = backbone_model.patch_size
+    # planecycle_converter returns a wrapper module; the plain backbone sits at .backbone
+    backbone = getattr(backbone_model, "backbone", backbone_model)
+    patch_size = backbone.patch_size
     backbone_indices_to_use = _get_backbone_out_indices(backbone_model, backbone_out_layers)
     autocast_ctx = partial(torch.autocast, device_type="cuda", enabled=True, dtype=autocast_dtype)
 
@@ -226,7 +233,6 @@ def build_segmentation_decoder(
         backbone_model,
         n=backbone_indices_to_use,
         autocast_ctx=autocast_ctx,
-        reshape=True,
         return_class_token=False,
         tuning=tuning,
     )
@@ -237,7 +243,7 @@ def build_segmentation_decoder(
         backbone_model.requires_grad_(True)
         backbone_model.train()
 
-    embed_dim = backbone_model.feature_model.embed_dim
+    embed_dim = backbone.embed_dim
     if isinstance(embed_dim, int):
         if backbone_out_layers in ["four_last", "four_even_intervals"]:
             embed_dim = [embed_dim] * 4

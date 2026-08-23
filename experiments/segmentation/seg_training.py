@@ -17,7 +17,10 @@ from .decoders import build_segmentation_decoder
 from .schedulers import build_scheduler
 from .loss import MultiSegmentationLoss
 
-from planecycle.converters.converter import PlaneCycleConverter
+from planecycle import planecycle_converter
+
+from experiments.baselines.dinov3.vit.vision_transformer import BaselineViT
+from experiments.medmnist.config import arch_kwargs
 
 
 def set_seed(seed):
@@ -256,8 +259,10 @@ def main(cfg):
 
     # W&B initialization
     task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
-    wandb.init(project="Segmentation Training", entity=...,     # TODO
-               name=cfg.wandb_name, reinit=True, dir=...)       # TODO
+    wandb_dir = ...     # TODO: wandb log dir
+    os.makedirs(wandb_dir, exist_ok=True)
+    wandb.init(project="Segmentation Training", entity=...,     # TODO: wandb entity
+               name=cfg.wandb_name, reinit=True, dir=wandb_dir)
 
     # Load datasets
     if cfg.dataset == 'lidc':
@@ -296,9 +301,22 @@ def main(cfg):
     )
 
     # Load backbone model
-    backbone_model = torch.hub.load(
-        **cfg.backbone_model.load_model
-    )
+    block_type = cfg.backbone_model.block_type
+    if block_type == 'PlaneCycle':
+        # Plain 2D backbone from hub; converted below by planecycle_converter
+        backbone_model = torch.hub.load(
+            **cfg.backbone_model.load_model
+        )
+    elif block_type in ('Slice2D', 'Flatten3D'):
+        # BaselineViT handles both through one flag; its state-dict keys equal
+        # the plain backbone's, so the official checkpoints load unchanged
+        backbone_model = BaselineViT(
+            block_type=block_type,
+            **arch_kwargs(cfg.backbone_model.load_model.model),
+        )
+    else:
+        raise KeyError(f"Unknown block_type: {block_type}")
+
     # Load pretrained weights
     checkpoint_path = cfg.backbone_model.checkpoint_path
     if not os.path.exists(checkpoint_path):
@@ -306,11 +324,12 @@ def main(cfg):
     pretrained_weights = torch.load(checkpoint_path, map_location=device)
     backbone_model.load_state_dict(pretrained_weights, strict=False)
 
-    if cfg.backbone_model.load_model.block_type == 'PlaneCycle':
-        converter = PlaneCycleConverter(
-            **cfg.converter
+    if block_type == 'PlaneCycle':
+        backbone_model = planecycle_converter(
+            backbone_model,
+            cycle_order=tuple(cfg.converter.cycle_order),
+            pool_method=cfg.converter.pool_method,
         )
-        backbone_model = converter(backbone_model)
 
     backbone_model.to(device)
 

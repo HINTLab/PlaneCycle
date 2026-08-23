@@ -7,9 +7,13 @@ These are used to evaluate FeatDice scores mentioned in our paper.
 
 This is used to train and test **PlaneCycle** on different configurations.
 
+The backbone is built according to `backbone_model.block_type` in the cfg: `PlaneCycle` loads a plain 2D backbone via `torch.hub` and converts it with `planecycle_converter`; `Slice2D` / `Flatten3D` use `BaselineViT` from `experiments/baselines/dinov3/vit` (its state-dict keys equal the plain backbone's, so the official checkpoints load unchanged).
+
 ## `cfgs`
 
 This folder contains full fine-tuning and linear probing example files of configuration.
+
+Notably, `block_type` sits at the `backbone_model` level (not inside `load_model` — the hub entrypoints no longer accept it), and `load_model.repo_or_dir` should point to the **repository root** (where `hubconf.py` lives).
 
 ## `loss.py`
 

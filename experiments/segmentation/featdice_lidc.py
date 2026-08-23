@@ -44,7 +44,7 @@ if __name__ == "__main__":
                            pin_memory=(torch.cuda.is_available()), num_workers=num_workers)
 
     # Cfgs dir
-    MODEL_REPO_PATH = '*/PlaneCycle/models'     # TODO: hubconf root dir
+    MODEL_REPO_PATH = '*/PlaneCycle'    # TODO: repo root dir (contains hubconf.py)
     CHECKPOINT_DIR = ...     # TODO: checkpoint root dir
 
     if args.model == 'small':
@@ -61,17 +61,27 @@ if __name__ == "__main__":
 
     import sys
 
-    sys.path.append(os.path.abspath("*/PlaneCycle"))    # TODO: project root dir
-    from planecycle.converters.converter import PlaneCycleConverter
+    sys.path.append(os.path.abspath(MODEL_REPO_PATH))
+    from planecycle import planecycle_converter
+    from experiments.baselines.dinov3.vit.vision_transformer import BaselineViT
+    from experiments.medmnist.config import arch_kwargs
 
     # Load model offline
-    model = torch.hub.load(
-        repo_or_dir=MODEL_REPO_PATH,
-        model=MODEL_ARCH,
-        source='local',
-        pretrained=False,
-        block_type=args.mode,
-    )
+    if args.mode == 'PlaneCycle':
+        # Plain 2D backbone from hub; converted below by planecycle_converter
+        model = torch.hub.load(
+            repo_or_dir=MODEL_REPO_PATH,
+            model=MODEL_ARCH,
+            source='local',
+            pretrained=False,
+        )
+    else:
+        # BaselineViT handles Slice2D / Flatten3D through one flag; its state-dict
+        # keys equal the plain backbone's, so the official checkpoints load unchanged
+        model = BaselineViT(
+            block_type=args.mode,
+            **arch_kwargs(MODEL_ARCH),
+        )
 
     # Load pretrained weights
     if not os.path.exists(FULL_CHECKPOINT_PATH):
@@ -82,11 +92,11 @@ if __name__ == "__main__":
     model.load_state_dict(pretrained_weights, strict=False)
 
     if args.mode == 'PlaneCycle':
-        converter = PlaneCycleConverter(
+        model = planecycle_converter(
+            model,
             cycle_order=('HW', 'DW', 'DH', 'HW'),
             pool_method="PCg"
         )
-        model = converter(model)
 
     model.to(device)
     model.eval()
@@ -118,34 +128,9 @@ if __name__ == "__main__":
                 y = y.permute(0, 2, 1, 3, 4)
 
                 for j, feature in enumerate(features):
-                    h_tok = int(math.sqrt(feature.shape[1]))
-                    w_tok = h_tok
-
-                    # =================== PlaneCycle & Slice2D ===================
-                    if args.mode == 'PlaneCycle' or args.mode == 'Slice2D':
-                        feature = (
-                            feature.permute(0, 2, 1)
-                            .contiguous()
-                            .view(feature.shape[0], feature.shape[-1], h_tok, w_tok)
-                        )
-
-                        # Recover to volume: [B, C_feat, D, h, w]
-                        feature = (
-                            feature.view(y.shape[0], y.shape[2], feature.shape[1], *feature.shape[-2:])
-                            .permute(0, 2, 1, 3, 4)
-                            .contiguous()
-                        )
-                    # =================== PlaneCycle & Slice2D ===================
-
-                    # ======================== Flatten 3D ========================
-                    if args.mode == 'Flatten3D':
-                        feature = (
-                            feature.permute(0, 2, 1)  # [B, C, DHW]
-                            .contiguous()
-                            .view(feature.shape[0], feature.shape[-1], y.shape[2], input_size // patch_size,
-                                  input_size // patch_size)
-                        )
-                    # ======================== Flatten 3D ========================
+                    # get_intermediate_layers returns channels-last xf (B, D, h, w, C)
+                    # in every mode; recover to volume: [B, C_feat, D, h, w]
+                    feature = feature.permute(0, 4, 1, 2, 3).contiguous()
 
                     B, C_feat, D, h, w = feature.shape
                     d_center = D // 2
