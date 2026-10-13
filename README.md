@@ -1,6 +1,8 @@
 # PlaneCycle
 
-PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters ([arXiv](https://arxiv.org/abs/2603.04165))
+PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters
+
+**MICCAI 2026** · [Paper](https://papers.miccai.org/miccai-2026/paper/0966_paper.pdf) · [arXiv](https://arxiv.org/abs/2603.04165)
 
 [//]: # (> 🚀 **Coming soon:** A unified operator for ViTs and CNNs *&#40;tests already passed, full release on the way!&#41;*)
 
@@ -148,7 +150,7 @@ above.
 
 ## Results
 
-The paper's ViT-S/B/L results are in [`Paper`](https://arxiv.org/abs/2603.04165)
+The paper's ViT-S/B/L results are in the [MICCAI 2026 paper](https://papers.miccai.org/miccai-2026/paper/0966_paper.pdf)
 (Tables 1–3: linear probing, full fine-tuning, and segmentation).
 
 PlaneCycle on the DINOv3 **ConvNeXt** backbones — follow-up work beyond the
@@ -163,3 +165,16 @@ paper — is reported separately in
 | Paper sweeps on Slurm (all methods × datasets × seeds) | `experiments/medmnist/scripts/submit.sh` | [`experiments/medmnist/scripts/README.md`](experiments/medmnist/scripts/README.md) |
 | LIDC / MMWHS segmentation | `experiments/segmentation/seg_training.py` | [`experiments/segmentation/README.md`](experiments/segmentation/README.md) |
 | Comparison baselines | selected via `--block_type` | [`experiments/baselines/dinov3/README.md`](experiments/baselines/dinov3/README.md) |
+
+## Citation
+
+If you find this work useful, please cite:
+
+```bibtex
+@inproceedings{yu2026planecycle,
+  title     = {PlaneCycle: Training-Free 2D-to-3D Lifting of Foundation Models Without Adapters},
+  author    = {Yu, Yinghong and Li, Guangyuan and Yang, Jiancheng},
+  booktitle = {Medical Image Computing and Computer Assisted Intervention -- MICCAI 2026},
+  year      = {2026}
+}
+```
